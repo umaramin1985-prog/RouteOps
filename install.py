@@ -39,8 +39,8 @@ def main():
     # 0. Check Required Ports
     print_step('Verifying required ports are available...')
     
-    # Check rigid ports first (5173, 8000, 5432)
-    rigid_ports = [5173, 8000, 5432]
+    # Check rigid ports first (5173, 8000, 5433)
+    rigid_ports = [5173, 8000, 5433]
     ports_in_use = [p for p in rigid_ports if not check_port(p)]
     if ports_in_use:
         print_error(f'The following ports are already in use: {", ".join(map(str, ports_in_use))}')
