@@ -186,6 +186,19 @@ def remove_all_containers():
                     count += 1
                 except:
                     pass
+                    
+        # Clean /data directory
+        import shutil
+        data_dir = os.path.abspath('/data')
+        if os.path.exists(data_dir):
+            for f in os.listdir(data_dir):
+                if f != 'speeds.csv': # keep overrides
+                    p = os.path.join(data_dir, f)
+                    if os.path.isfile(p):
+                        os.remove(p)
+                    elif os.path.isdir(p):
+                        shutil.rmtree(p)
+                        
         return {'status': 'success', 'removed': count}
     except Exception as e:
         return {'error': str(e)}
