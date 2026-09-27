@@ -11,6 +11,33 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('setup');
   const [dockerStatus, setDockerStatus] = useState<{car: string, foot: string, active_states?: string[]} | null>(null);
   const [dbStatus, setDbStatus] = useState<string | null>(null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState('');
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordMsg('');
+    try {
+      const res = await fetch('http://localhost:8000/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', old_password: oldPassword, new_password: newPassword })
+      });
+      if (res.ok) {
+        setPasswordMsg('Password changed successfully!');
+        setOldPassword('');
+        setNewPassword('');
+        setTimeout(() => setShowChangePassword(false), 2000);
+      } else {
+        const data = await res.json();
+        setPasswordMsg(data.detail || 'Invalid old password');
+      }
+    } catch (err) {
+      setPasswordMsg('Unable to connect to server');
+    }
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -97,6 +124,16 @@ export default function Dashboard() {
             </button>
             <button 
               onClick={() => {
+                setShowChangePassword(true);
+                setPasswordMsg('');
+              }} 
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
+              title="Change Password"
+            >
+              <Settings size={18} />
+            </button>
+            <button 
+              onClick={() => {
                 localStorage.removeItem('isAuthenticated');
                 navigate('/');
               }} 
@@ -151,6 +188,24 @@ export default function Dashboard() {
       }}>
         <span>&copy; {new Date().getFullYear()} OSRM Admin Portal. All rights reserved.</span>
       </footer>
+      )}
+
+      {/* Change Password Modal */}
+      {showChangePassword && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="glass-panel animate-fade-in" style={{ padding: '24px', width: '400px', position: 'relative' }}>
+            <h3 style={{ marginBottom: '16px' }}>Change Password</h3>
+            {passwordMsg && <div style={{ padding: '8px', marginBottom: '16px', background: passwordMsg.includes('success') ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)', color: passwordMsg.includes('success') ? '#86efac' : '#fca5a5', fontSize: '0.9rem', borderRadius: '4px' }}>{passwordMsg}</div>}
+            <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <input type="password" placeholder="Current Password" required value={oldPassword} onChange={e => setOldPassword(e.target.value)} className="input-field" style={{ padding: '8px 12px' }} />
+              <input type="password" placeholder="New Password" required value={newPassword} onChange={e => setNewPassword(e.target.value)} className="input-field" style={{ padding: '8px 12px' }} />
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '8px' }}>
+                <button type="button" onClick={() => setShowChangePassword(false)} style={{ background: 'transparent', border: '1px solid var(--panel-border)', color: 'var(--text-primary)', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer' }}>Cancel</button>
+                <button type="submit" className="btn-primary" style={{ padding: '8px 16px' }}>Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
     </div>

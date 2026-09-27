@@ -23,4 +23,11 @@ class RoadOverride(Base):
     geometry = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password = Column(String) # For simplicity, plaintext or simple hash here
+    recovery_code = Column(String, nullable=True)
+
 Base.metadata.create_all(bind=engine)

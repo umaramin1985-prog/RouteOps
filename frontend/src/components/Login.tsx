@@ -1,20 +1,58 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Map, Lock, User, ArrowRight } from 'lucide-react';
+import { Map, Lock, User, ArrowRight, Key } from 'lucide-react';
 
 export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+  const [mode, setMode] = useState<'login' | 'forgot'>('login');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const navigate = useNavigate();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (username === 'admin' && password === 'admin') {
-      localStorage.setItem('isAuthenticated', 'true');
-      navigate('/dashboard');
-    } else {
-      setError('Invalid username or password');
+    setError('');
+    try {
+      const res = await fetch('http://localhost:8000/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      if (res.ok) {
+        localStorage.setItem('isAuthenticated', 'true');
+        navigate('/dashboard');
+      } else {
+        const data = await res.json();
+        setError(data.detail || 'Invalid username or password');
+      }
+    } catch (err) {
+      setError('Unable to connect to the server');
+    }
+  };
+
+  const handleRecover = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccessMsg('');
+    try {
+      const res = await fetch('http://localhost:8000/auth/recover-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, recovery_code: recoveryCode, new_password: newPassword })
+      });
+      if (res.ok) {
+        setSuccessMsg('Password recovered successfully! Please sign in.');
+        setMode('login');
+        setPassword('');
+      } else {
+        const data = await res.json();
+        setError(data.detail || 'Invalid recovery code');
+      }
+    } catch (err) {
+      setError('Unable to connect to the server');
     }
   };
 
@@ -41,38 +79,93 @@ export default function Login() {
                 {error}
             </div>
         )}
+        {successMsg && (
+            <div style={{ background: 'rgba(34, 197, 94, 0.1)', color: '#86efac', padding: '10px', marginBottom: '1.5rem', border: '1px solid #86efac', fontSize: '13px', textAlign: 'center' }}>
+                {successMsg}
+            </div>
+        )}
 
-        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div style={{ position: 'relative' }}>
-            <User size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
-            <input 
-              type="text" 
-              placeholder="Username" 
-              className="input-field"
-              style={{ paddingLeft: '44px' }}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
-          </div>
-          
-          <div style={{ position: 'relative' }}>
-            <Lock size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
-            <input 
-              type="password" 
-              placeholder="Password" 
-              className="input-field"
-              style={{ paddingLeft: '44px' }}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
+        {mode === 'login' ? (
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <div style={{ position: 'relative' }}>
+              <User size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <input 
+                type="text" 
+                placeholder="Username" 
+                className="input-field"
+                style={{ paddingLeft: '44px' }}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+              />
+            </div>
+            
+            <div style={{ position: 'relative' }}>
+              <Lock size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <input 
+                type="password" 
+                placeholder="Password" 
+                className="input-field"
+                style={{ paddingLeft: '44px' }}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
 
-          <button type="submit" className="btn-primary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
-            Sign In <ArrowRight size={18} />
-          </button>
-        </form>
+            <button type="submit" className="btn-primary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+              Sign In <ArrowRight size={18} />
+            </button>
+            <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccessMsg(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '0.9rem' }}>
+              Forgot Password?
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleRecover} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <div style={{ position: 'relative' }}>
+              <User size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <input 
+                type="text" 
+                placeholder="Username" 
+                className="input-field"
+                style={{ paddingLeft: '44px' }}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+              />
+            </div>
+            <div style={{ position: 'relative' }}>
+              <Key size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <input 
+                type="text" 
+                placeholder="Recovery Code (default: 123456)" 
+                className="input-field"
+                style={{ paddingLeft: '44px' }}
+                value={recoveryCode}
+                onChange={(e) => setRecoveryCode(e.target.value)}
+                required
+              />
+            </div>
+            <div style={{ position: 'relative' }}>
+              <Lock size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <input 
+                type="password" 
+                placeholder="New Password" 
+                className="input-field"
+                style={{ paddingLeft: '44px' }}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+              />
+            </div>
+            <button type="submit" className="btn-primary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+              Reset Password
+            </button>
+            <button type="button" onClick={() => { setMode('login'); setError(''); setSuccessMsg(''); }} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.9rem' }}>
+              Back to Login
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );

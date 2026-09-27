@@ -8,7 +8,7 @@ import psutil
 from sqlalchemy.orm import Session
 
 # Local imports
-from database import SessionLocal, RoadOverride, engine, Base
+from database import SessionLocal, RoadOverride, engine, Base, User
 
 app = FastAPI(title="OSRM Management API")
 
@@ -41,9 +41,58 @@ class OverrideRequest(BaseModel):
     lng: Optional[float] = None
     geometry: Optional[str] = None
 
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    username: str
+    old_password: str
+    new_password: str
+
+class RecoverPasswordRequest(BaseModel):
+    username: str
+    recovery_code: str
+    new_password: str
+
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    admin_user = db.query(User).filter(User.username == "admin").first()
+    if not admin_user:
+        admin_user = User(username="admin", password="admin", recovery_code="123456")
+        db.add(admin_user)
+        db.commit()
+    db.close()
+
+@app.post("/auth/login")
+def login(req: AuthRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == req.username).first()
+    if user and user.password == req.password:
+        return {"status": "success"}
+    from fastapi import HTTPException
+    raise HTTPException(status_code=401, detail="Invalid username or password")
+
+@app.post("/auth/change-password")
+def change_password(req: ChangePasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == req.username).first()
+    if user and user.password == req.old_password:
+        user.password = req.new_password
+        db.commit()
+        return {"status": "success"}
+    from fastapi import HTTPException
+    raise HTTPException(status_code=401, detail="Invalid old password")
+
+@app.post("/auth/recover-password")
+def recover_password(req: RecoverPasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == req.username).first()
+    if user and user.recovery_code == req.recovery_code:
+        user.password = req.new_password
+        db.commit()
+        return {"status": "success"}
+    from fastapi import HTTPException
+    raise HTTPException(status_code=401, detail="Invalid username or recovery code")
 
 @app.get("/")
 def read_root():
