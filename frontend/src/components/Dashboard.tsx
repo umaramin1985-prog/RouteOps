@@ -167,10 +167,22 @@ export default function Dashboard() {
         )}
 
         <div className="animate-fade-in" style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-          <div style={{ display: activeTab === 'map' ? 'block' : 'none', height: '100%' }}>
+          <div style={{ 
+            visibility: activeTab === 'map' ? 'visible' : 'hidden', 
+            position: activeTab === 'map' ? 'relative' : 'absolute',
+            top: 0, left: 0, right: 0, bottom: 0,
+            height: '100%',
+            zIndex: activeTab === 'map' ? 10 : 0
+          }}>
             <MapDisplay activeStates={dockerStatus?.active_states || []} />
           </div>
-          <div style={{ display: activeTab === 'setup' ? 'block' : 'none', height: '100%' }}>
+          <div style={{ 
+            visibility: activeTab === 'setup' ? 'visible' : 'hidden', 
+            position: activeTab === 'setup' ? 'relative' : 'absolute',
+            top: 0, left: 0, right: 0, bottom: 0,
+            height: '100%',
+            zIndex: activeTab === 'setup' ? 10 : 0
+          }}>
             <EngineSetup />
           </div>
         </div>
