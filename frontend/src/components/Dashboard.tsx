@@ -96,7 +96,10 @@ export default function Dashboard() {
               {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
             </button>
             <button 
-              onClick={() => navigate('/')} 
+              onClick={() => {
+                localStorage.removeItem('isAuthenticated');
+                navigate('/');
+              }} 
               style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
             >
               <LogOut size={18} />

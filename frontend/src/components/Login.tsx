@@ -11,6 +11,7 @@ export default function Login() {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (username === 'admin' && password === 'admin') {
+      localStorage.setItem('isAuthenticated', 'true');
       navigate('/dashboard');
     } else {
       setError('Invalid username or password');
