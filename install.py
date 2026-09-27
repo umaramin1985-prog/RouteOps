@@ -109,21 +109,7 @@ def main():
     run_cmd('docker info', ignore_error=False)
     print_success('Docker is running.')
 
-    # 4. Bootstrap Data Directory
-    print_step('Preparing data directory...')
-    os.makedirs('data', exist_ok=True)
-    if not os.path.exists('data/maryland-latest.osm.pbf') and not os.path.exists('data/merged.osm.pbf'):
-        print('Downloading default OSM map (Maryland) for initial bootstrap...')
-        import urllib.request
-        try:
-            urllib.request.urlretrieve('http://download.geofabrik.de/north-america/us/maryland-latest.osm.pbf', 'data/maryland-latest.osm.pbf')
-            print_success('Downloaded default map data.')
-        except Exception as e:
-            print_error(f'Failed to download map data: {e}')
-    else:
-        print_success('Map data already exists. Skipping download.')
-
-    # 5. Start Docker Compose
+    # 4. Start Docker Compose
     print_step('Spinning up the OSRM stack via docker-compose...')
     run_cmd('docker compose up -d')
     print_success('Docker containers started successfully.')
