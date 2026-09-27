@@ -43,3 +43,6 @@ Write-Host "  Launching main installation script..." -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 
 python install.py
+
+Write-Host "`n"
+Read-Host -Prompt "Press Enter to exit"
