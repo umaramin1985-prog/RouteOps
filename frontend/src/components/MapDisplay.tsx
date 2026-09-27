@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Edit2, Map, Search, Share2, ExternalLink, FileText, Info, Layers } from 'lucide-react';
+import { Edit2, Map, Search, Share2, ExternalLink, FileText, Info, Layers, Copy, Check } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -57,9 +57,16 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
   
   const [startPoint, setStartPoint] = useState<L.LatLng | null>(null);
   const [endPoint, setEndPoint] = useState<L.LatLng | null>(null);
+  const [startInputText, setStartInputText] = useState<string>('');
+  const [endInputText, setEndInputText] = useState<string>('');
   const [routeCoordinates, setRouteCoordinates] = useState<[number, number][]>([]);
   const [distance, setDistance] = useState<string>('');
   const [mainRouteInfo, setMainRouteInfo] = useState<{distance: string, duration: string} | null>(null);
+  const [rawJson, setRawJson] = useState<any>(null);
+  const [rawRequestUrl, setRawRequestUrl] = useState<string>('');
+  const [showRawJson, setShowRawJson] = useState<boolean>(false);
+  const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
+  const [copiedJson, setCopiedJson] = useState<boolean>(false);
   const [focusRoute, setFocusRoute] = useState<[number, number][] | null>(null);
   const [routeBounds, setRouteBounds] = useState<L.LatLngBounds | null>(null);
   const [profile, setProfile] = useState<'car' | 'foot'>('car');
@@ -84,6 +91,16 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
   const [editReason, setEditReason] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState<string>('');
+
+  useEffect(() => {
+    if (startPoint) setStartInputText(`${startPoint.lat.toFixed(5)}, ${startPoint.lng.toFixed(5)}`);
+    else setStartInputText('');
+  }, [startPoint]);
+
+  useEffect(() => {
+    if (endPoint) setEndInputText(`${endPoint.lat.toFixed(5)}, ${endPoint.lng.toFixed(5)}`);
+    else setEndInputText('');
+  }, [endPoint]);
 
   useEffect(() => {
     if (activeStates && activeStates.length > 0 && !selectedState) {
@@ -124,10 +141,12 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
       if (avoidTolls && profile === 'car') {
           url += '&exclude=toll';
       }
+      setRawRequestUrl(url);
       
       fetch(url)
         .then(res => res.json())
         .then(data => {
+          setRawJson(data);
           if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
             
             // Check snap distance to see if it's way out of bounds (e.g. >2000m)
@@ -523,9 +542,21 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 8px #22c55e', marginRight: '8px' }}></div>
             <input 
                 type="text" 
-                readOnly 
-                placeholder="Start - click on map to drop marker" 
-                value={startPoint ? `${startPoint.lat.toFixed(5)}, ${startPoint.lng.toFixed(5)}` : ''}
+                placeholder="Start - click map or type lat, lng" 
+                value={startInputText}
+                onChange={(e) => setStartInputText(e.target.value)}
+                onBlur={() => {
+                    const parts = startInputText.split(',').map(p => parseFloat(p.trim()));
+                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                        setStartPoint(L.latLng(parts[0], parts[1]));
+                        if (startPoint && endPoint) setEndPoint(null); // Optional: clear end if we're resetting start
+                    } else if (!startInputText.trim()) {
+                        setStartPoint(null);
+                    }
+                }}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                }}
                 style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
             />
             {startPoint && (
@@ -538,9 +569,20 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444', boxShadow: '0 0 8px #ef4444', marginRight: '8px' }}></div>
             <input 
                 type="text" 
-                readOnly 
-                placeholder="End - click on map to drop marker" 
-                value={endPoint ? `${endPoint.lat.toFixed(5)}, ${endPoint.lng.toFixed(5)}` : ''}
+                placeholder="End - click map or type lat, lng" 
+                value={endInputText}
+                onChange={(e) => setEndInputText(e.target.value)}
+                onBlur={() => {
+                    const parts = endInputText.split(',').map(p => parseFloat(p.trim()));
+                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                        setEndPoint(L.latLng(parts[0], parts[1]));
+                    } else if (!endInputText.trim()) {
+                        setEndPoint(null);
+                    }
+                }}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                }}
                 style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
             />
             {endPoint && (
@@ -635,14 +677,24 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             <div style={{ background: 'var(--panel-inner-bg)', padding: '12px', borderRadius: 0, border: '1px solid var(--input-border)', display: 'flex', flexDirection: 'column' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>{distance}</span>
-                    <button 
-                        onClick={() => setShowSteps(!showSteps)} 
-                        style={{ background: 'var(--divider-bg)', border: 'none', color: 'var(--text-primary)', padding: '4px 10px', borderRadius: 0, fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'background 0.2s' }}
-                        onMouseOver={(e) => e.currentTarget.style.background = 'var(--panel-border)'}
-                        onMouseOut={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
-                    >
-                        {showSteps ? 'Hide Navigation' : 'Turn-by-turn'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <button 
+                            onClick={() => setShowRawJson(true)} 
+                            style={{ background: 'var(--divider-bg)', border: 'none', color: 'var(--text-primary)', padding: '4px 10px', borderRadius: 0, fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'background 0.2s' }}
+                            onMouseOver={(e) => e.currentTarget.style.background = 'var(--panel-border)'}
+                            onMouseOut={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
+                        >
+                            JSON
+                        </button>
+                        <button 
+                            onClick={() => setShowSteps(!showSteps)} 
+                            style={{ background: 'var(--divider-bg)', border: 'none', color: 'var(--text-primary)', padding: '4px 10px', borderRadius: 0, fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'background 0.2s' }}
+                            onMouseOver={(e) => e.currentTarget.style.background = 'var(--panel-border)'}
+                            onMouseOut={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
+                        >
+                            {showSteps ? 'Hide Navigation' : 'Turn-by-turn'}
+                        </button>
+                    </div>
                 </div>
                 
                 {showSteps && routeSteps.length > 0 && (
@@ -672,32 +724,7 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
         )}
       </div>
 
-      {/* Active Overrides Panel */}
-      <div className="glass-panel" style={{
-        position: 'absolute', top: '80px', right: '20px',
-        zIndex: 1000, padding: '16px', borderRadius: 0, width: '250px', maxHeight: '400px', overflowY: 'auto'
-      }}>
-        <h3 style={{ fontSize: '14px', margin: '0 0 10px 0', fontWeight: 600 }}>Active Road Edits</h3>
-        {activeOverrides.length === 0 ? (
-            <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>No active overrides.</p>
-        ) : (
-            activeOverrides.map(ov => (
-                <div key={ov.id} style={{ background: 'var(--panel-inner-bg)', padding: '10px', borderRadius: 0, marginBottom: '8px', fontSize: '12px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                        <strong>{ov.is_closed ? 'Closed' : `Speed: ${Math.round(ov.speed_kmh / 1.60934)} mph`}</strong>
-                        <div>
-                            {(ov.geometry || (ov.lat && ov.lng)) && (
-                                <button onClick={() => handleGoTo(ov)} style={{ background: 'var(--accent-color)', color: 'white', border: 'none', borderRadius: 0, padding: '2px 6px', cursor: 'pointer', fontSize: '10px', marginRight: '4px' }}>Go To</button>
-                            )}
-                            <button onClick={() => revertOverride(ov.id)} style={{ background: 'var(--danger)', color: 'white', border: 'none', borderRadius: 0, padding: '2px 6px', cursor: 'pointer', fontSize: '10px' }}>Revert</button>
-                        </div>
-                    </div>
-                    {ov.reason && <div style={{ color: 'var(--text-primary)', fontSize: '11px', marginBottom: '4px' }}>{ov.reason}</div>}
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '10px', wordBreak: 'break-all' }}>Nodes: {ov.from_node.substring(0,6)}... &rarr; {ov.to_node.substring(0,6)}...</div>
-                </div>
-            ))
-        )}
-      </div>
+
 
       {/* Editor Panel */}
       {routeCoordinates.length > 0 && profile === 'car' && isSameRoad && (
@@ -791,6 +818,63 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                   Apply Edit
               </button>
           </div>
+      )}
+
+      {/* Raw JSON Modal */}
+      {showRawJson && rawJson && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+          background: 'rgba(0,0,0,0.5)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(5px)'
+        }}>
+          <div className="glass-panel custom-scrollbar" style={{ width: '80%', height: '80%', overflow: 'auto', padding: '24px', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+            <button 
+              onClick={() => setShowRawJson(false)}
+              style={{ position: 'absolute', top: '16px', right: '16px', background: 'var(--danger)', border: 'none', color: 'white', padding: '6px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+            >Close</button>
+            <h3 style={{ marginTop: 0, marginBottom: '16px', color: 'var(--text-primary)' }}>OSRM Request & Response</h3>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: 600 }}>Request URL:</div>
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(rawRequestUrl);
+                  setCopiedUrl(true);
+                  setTimeout(() => setCopiedUrl(false), 2000);
+                }}
+                style={{ background: 'transparent', border: '1px solid var(--input-border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', transition: 'all 0.2s' }}
+                onMouseOver={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
+                onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                {copiedUrl ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                {copiedUrl ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-primary)', background: 'var(--input-bg)', padding: '12px', border: '1px solid var(--input-border)', marginBottom: '20px', wordBreak: 'break-all', borderRadius: '4px' }}>
+                {rawRequestUrl}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: 600 }}>Response JSON:</div>
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(JSON.stringify(rawJson));
+                  setCopiedJson(true);
+                  setTimeout(() => setCopiedJson(false), 2000);
+                }}
+                style={{ background: 'transparent', border: '1px solid var(--input-border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', transition: 'all 0.2s' }}
+                onMouseOver={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
+                onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                {copiedJson ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                {copiedJson ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <pre style={{ flex: 1, fontSize: '12px', color: 'var(--text-primary)', background: 'var(--input-bg)', padding: '16px', border: '1px solid var(--input-border)', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', borderRadius: '4px' }}>
+              {JSON.stringify(rawJson)}
+            </pre>
+          </div>
+        </div>
       )}
     </div>
   );

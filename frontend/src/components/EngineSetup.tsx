@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, Map as MapIcon, RotateCcw, AlertTriangle } from 'lucide-react';
 import { AreaChart, Area, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -101,13 +102,16 @@ export default function EngineSetup() {
     const [showCarLogs, setShowCarLogs] = useState(false);
     const [showFootLogs, setShowFootLogs] = useState(false);
     const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+    const [termInput, setTermInput] = useState('');
+    const [forceDownload, setForceDownload] = useState(false);
     const logsContainerRef = useRef<HTMLDivElement>(null);
+    const isScrolledToBottom = useRef(true);
 
     useEffect(() => {
-        if (logsContainerRef.current) {
+        if (logsContainerRef.current && isScrolledToBottom.current) {
             logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
         }
-    }, [apiCalls]);
+    }, [apiCalls, deployLogs, viewMode]);
 
     useEffect(() => {
         const fetchMetrics = async () => {
@@ -191,6 +195,7 @@ export default function EngineSetup() {
     const handleMerge = async () => {
         if (selectedStates.length === 0) return;
         setMergeStatus('Starting...');
+        setDeployLogs([]);
         try {
             fetch('http://localhost:8000/system/merge', {
                 method: 'POST',
@@ -206,14 +211,33 @@ export default function EngineSetup() {
         setShowModal(false);
         setActiveStates(selectedStates);
         setViewMode('deployment');
+        setDeployLogs([]);
         try {
             await fetch('http://localhost:8000/system/merge', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort })
+                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: forceDownload })
             });
             setMergeStatus('Deployment initiated. See logs for progress.');
         } catch (e) {}
+    };
+
+    const handleTerminalCommand = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter' && termInput.trim()) {
+            const cmd = termInput.trim();
+            setTermInput('');
+            // Optimistically scroll to bottom
+            setTimeout(() => {
+                if (logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+            }, 100);
+            try {
+                await fetch('http://localhost:8000/system/exec', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: cmd })
+                });
+            } catch (err) {}
+        }
     };
 
     const cardStyle = {
@@ -231,8 +255,8 @@ export default function EngineSetup() {
             
             {/* Top Row: Metrics */}
             {/* Row 1 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: '20px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
                 {/* CPU Chart */}
                 <div style={cardStyle}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -290,6 +314,41 @@ export default function EngineSetup() {
                         <span>0:00</span><span>12:00</span><span>24:00</span><span>36:00</span><span>48:00</span><span>60:00</span>
                     </div>
                 </div>
+
+                {/* Disk Chart */}
+                <div style={cardStyle}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '15px' }}>Disk Usage</div>
+                        <div style={{ fontSize: '12px', background: 'var(--panel-inner-bg)', padding: '6px 12px', borderRadius: 0, color: 'var(--text-secondary)' }}>Last 60 mins v</div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '16px' }}>
+                        <div style={{ fontSize: '32px', fontWeight: 700, color: '#f59e0b', lineHeight: 1 }}>
+                            {metrics && metrics.disk !== undefined ? `${metrics.disk.toFixed(0)}%` : '--'}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-secondary)', textAlign: 'right', paddingBottom: '2px' }}>
+                            <div style={{ marginBottom: '2px' }}>Total: {metrics && metrics.disk_total !== undefined ? `${metrics.disk_total} GB` : '--'}</div>
+                            <div>Free: {metrics && metrics.disk_free !== undefined ? `${metrics.disk_free} GB` : '--'}</div>
+                        </div>
+                    </div>
+                    <div style={{ height: '120px', width: '100%', position: 'relative' }}>
+                        <div style={{ position: 'absolute', inset: 0, opacity: 0.1, backgroundImage: 'linear-gradient(to right, rgba(255,255,255,1) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,1) 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={history} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
+                                <defs>
+                                    <linearGradient id="colorDisk" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4}/>
+                                        <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} />
+                                <Area type="monotone" dataKey="disk" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorDisk)" animationDuration={300} />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-secondary)', marginTop: '8px' }}>
+                        <span>0:00</span><span>12:00</span><span>24:00</span><span>36:00</span><span>48:00</span><span>60:00</span>
+                    </div>
+                </div>
                 </div>
 
                     {/* Map Data */}
@@ -320,31 +379,7 @@ export default function EngineSetup() {
                             Configure & Start Fresh Installation
                         </button>
                         
-                        {mergeStatus && (
-                            (() => {
-                                let progress = 0;
-                                const logsStr = deployLogs.join('\\n').toLowerCase();
-                                if (logsStr.includes('deployment complete!')) progress = 100;
-                                else if (logsStr.includes('recreating osrm-foot container')) progress = 90;
-                                else if (logsStr.includes('recreating osrm-car container')) progress = 85;
-                                else if (logsStr.includes('running osrm customize for foot')) progress = 80;
-                                else if (logsStr.includes('running osrm extract for foot')) progress = 70;
-                                else if (logsStr.includes('running osrm customize for car')) progress = 60;
-                                else if (logsStr.includes('running osrm extract for car')) progress = 50;
-                                else if (logsStr.includes('merging files')) progress = 30;
-                                else if (logsStr.includes('downloading')) progress = 10;
-                                else if (mergeStatus.includes('initiated')) progress = 5;
-
-                                return (
-                                    <>
-                                        <div style={{ fontSize: '12px', color: 'var(--text-primary)', marginBottom: '8px' }}>Overall Installation Progress: {progress}%</div>
-                                        <div style={{ width: '100%', height: '6px', background: 'var(--panel-inner-bg)', borderRadius: 0, overflow: 'hidden' }}>
-                                            <div style={{ width: `${progress}%`, height: '100%', background: '#10b981', transition: 'width 1s', boxShadow: '0 0 10px #10b981' }}></div>
-                                        </div>
-                                    </>
-                                );
-                            })()
-                        )}
+                        
                     </div>
                 </div>
             </div>
@@ -483,25 +518,72 @@ export default function EngineSetup() {
                     </div>
                     {/* Log Card */}
                     <div style={{ ...cardStyle, flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid var(--panel-border)' }}>
-                            <h3 style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                                {viewMode === 'traffic' ? 'LIVE TRAFFIC - API CALLS (HTTP GET)' : 'DEPLOYMENT PROGRESS LOGS'}
-                            </h3>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid var(--panel-border)', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                                <h3 style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                                    {viewMode === 'traffic' ? 'LIVE TRAFFIC - API CALLS (HTTP GET)' : 'DEPLOYMENT PROGRESS LOGS'}
+                                </h3>
+                                {viewMode === 'deployment' && mergeStatus && (
+                                    (() => {
+                                        let progress = 0;
+                                        for (let i = deployLogs.length - 1; i >= 0; i--) {
+                                            const line = deployLogs[i].toLowerCase();
+                                            if (line.includes('deployment complete!')) { progress = 100; break; }
+                                            else if (line.includes('recreating osrm-foot container')) { progress = 90; break; }
+                                            else if (line.includes('recreating osrm-car container')) { progress = 85; break; }
+                                            else if (line.includes('running osrm customize for foot')) { progress = 80; break; }
+                                            else if (line.includes('running osrm partition for foot')) { progress = 75; break; }
+                                            else if (line.includes('running osrm extract for foot')) { progress = 70; break; }
+                                            else if (line.includes('running osrm customize for car')) { progress = 60; break; }
+                                            else if (line.includes('running osrm partition for car')) { progress = 55; break; }
+                                            else if (line.includes('running osrm extract for car')) { progress = 50; break; }
+                                            else if (line.includes('merging files') || line.includes('starting deployment')) { progress = 30; break; }
+                                            else if (line.includes('downloading')) { progress = 10; break; }
+                                            else if (line.includes('starting merge') || line.includes('initiated')) { progress = 5; break; }
+                                        }
+
+                                        const radius = 10;
+                                        const circumference = 2 * Math.PI * radius;
+                                        const strokeDashoffset = circumference - (progress / 100) * circumference;
+
+                                        return (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <svg width="24" height="24" viewBox="0 0 24 24" style={{ transform: 'rotate(-90deg)' }}>
+                                                    <circle cx="12" cy="12" r={radius} stroke="var(--panel-inner-bg)" strokeWidth="3" fill="none" />
+                                                    <circle cx="12" cy="12" r={radius} stroke="#10b981" strokeWidth="3" fill="none" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} style={{ transition: 'stroke-dashoffset 0.5s ease-in-out', strokeLinecap: 'round' }} />
+                                                </svg>
+                                                <span style={{ fontSize: '12px', fontWeight: 700, color: '#10b981' }}>{progress}%</span>
+                                            </div>
+                                        );
+                                    })()
+                                )}
+                            </div>
                             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                                 {viewMode === 'deployment' && (
                                     <button onClick={handleRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', padding: '2px 8px', fontSize: '10px', cursor: 'pointer' }} onMouseOver={e=>e.currentTarget.style.background='rgba(239,68,68,0.2)'} onMouseOut={e=>e.currentTarget.style.background='rgba(239,68,68,0.1)'}>
                                         Stop & Revert Everything
                                     </button>
                                 )}
-                                {viewMode === 'deployment' && (
+                                {viewMode === 'deployment' ? (
                                     <button onClick={() => setViewMode('traffic')} style={{ background: 'transparent', border: '1px solid var(--panel-border)', color: 'var(--text-primary)', padding: '2px 8px', fontSize: '10px', cursor: 'pointer' }}>
                                         View Traffic
+                                    </button>
+                                ) : (
+                                    <button onClick={() => setViewMode('deployment')} style={{ background: 'transparent', border: '1px solid var(--panel-border)', color: 'var(--text-primary)', padding: '2px 8px', fontSize: '10px', cursor: 'pointer' }}>
+                                        View Logs
                                     </button>
                                 )}
                                 <div style={{ color: 'var(--text-secondary)', fontSize: '14px', cursor: 'pointer' }}>✕</div>
                             </div>
                         </div>
-                        <div ref={logsContainerRef} style={{ background: 'var(--panel-inner-bg)', padding: '16px 20px', flex: 1, fontFamily: 'monospace', fontSize: '11px', color: 'var(--text-secondary)', overflowY: 'auto' }}>
+                        <div 
+                            ref={logsContainerRef} 
+                            onScroll={(e) => {
+                                const target = e.currentTarget;
+                                isScrolledToBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 20;
+                            }}
+                            style={{ background: 'var(--panel-inner-bg)', padding: '16px 20px', flex: 1, fontFamily: 'monospace', fontSize: '11px', color: 'var(--text-secondary)', overflowY: 'auto' }}
+                        >
                             {viewMode === 'traffic' ? (
                                 apiCalls.length === 0 ? <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>Listening for API traffic...</div> : 
                                     apiCalls.map((call, idx) => (
@@ -518,10 +600,23 @@ export default function EngineSetup() {
                                     ))
                             )}
                         </div>
+                        {viewMode === 'deployment' && (
+                            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--panel-bg)', padding: '8px 20px', borderTop: '1px solid var(--panel-border)' }}>
+                                <span style={{ color: '#10b981', marginRight: '8px', fontSize: '11px', fontFamily: 'monospace' }}>$</span>
+                                <input 
+                                    type="text" 
+                                    value={termInput}
+                                    onChange={(e) => setTermInput(e.target.value)}
+                                    onKeyDown={handleTerminalCommand}
+                                    placeholder="Type a docker command (e.g. docker ps) and press Enter..."
+                                    style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontFamily: 'monospace', fontSize: '11px' }}
+                                />
+                            </div>
+                        )}
                     </div>
                 </div>
-            {showModal && (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }}>
+            {showModal && createPortal(
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }}>
                     <div style={{ background: 'var(--panel-bg)', width: '800px', maxWidth: '90vw', maxHeight: '90vh', border: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column' }}>
                         <div style={{ padding: '20px', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h2 style={{ fontSize: '18px', fontWeight: 600, color: 'white', margin: 0 }}>Configure Fresh Installation</h2>
@@ -537,6 +632,12 @@ export default function EngineSetup() {
                                         <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search states..." style={{ background: 'transparent', border: 'none', color: 'white', width: '100%', outline: 'none', fontSize: '12px' }} />
                                     </div>
                                 </div>
+                                {selectedStates.length > 0 && (
+                                    <div style={{ marginBottom: '12px', fontSize: '12px', color: '#3b82f6', background: 'rgba(59,130,246,0.1)', padding: '8px 12px', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', justifyContent: 'space-between' }}>
+                                        <span><strong>Selected ({selectedStates.length}):</strong> {selectedStates.map(s => US_STATES.find(us => us.id === s)?.name).join(', ')}</span>
+                                        <button onClick={() => setSelectedStates([])} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600 }}>Clear All</button>
+                                    </div>
+                                )}
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', maxHeight: '350px', overflowY: 'auto' }}>
                                     {US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(state => {
                                         const isSelected = selectedStates.includes(state.id);
@@ -570,6 +671,13 @@ export default function EngineSetup() {
                                     </div>
                                 </div>
                             </div>
+                            
+                            <div style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '16px', marginTop: '24px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    <input type="checkbox" checked={forceDownload} onChange={(e) => setForceDownload(e.target.checked)} />
+                                    Force re-download latest map data from Geofabrik (clears cache)
+                                </label>
+                            </div>
                         </div>
                         
                         <div style={{ padding: '20px', borderTop: '1px solid var(--panel-border)', background: 'rgba(239,68,68,0.05)' }}>
@@ -579,12 +687,13 @@ export default function EngineSetup() {
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
             {/* Remove Confirmation Dialogue */}
-            {showRemoveConfirm && (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(4px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {showRemoveConfirm && createPortal(
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(4px)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <div style={{ background: 'var(--panel-bg)', width: '450px', border: '1px solid var(--panel-border)', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)', display: 'flex', flexDirection: 'column' }}>
                         <div style={{ padding: '20px', borderBottom: '1px solid var(--panel-border)' }}>
                             <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -604,7 +713,8 @@ export default function EngineSetup() {
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </div>
         </>

@@ -3,13 +3,29 @@ import { LogOut, Settings, Map as MapIcon, Activity, AlertTriangle, Maximize, Mi
 import { useNavigate } from 'react-router-dom';
 import MapDisplay from './MapDisplay';
 import EngineSetup from './EngineSetup';
+import ActiveEdits from './ActiveEdits';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [theme, setTheme] = useState('dark');
-  const [activeTab, setActiveTab] = useState('setup');
-  const [dockerStatus, setDockerStatus] = useState<{car: string, foot: string, active_states?: string[]} | null>(null);
+  const [activeTab, setActiveTab] = useState(() => {
+    const hash = window.location.hash.replace('#', '');
+    return ['map', 'setup', 'edits'].includes(hash) ? hash : 'setup';
+  });
+  
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace('#', '');
+      if (['map', 'setup', 'edits'].includes(hash)) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+  
+  const [dockerStatus, setDockerStatus] = useState<{car: string, foot: string, active_states?: string[], is_deploying?: boolean} | null>(null);
   const [dbStatus, setDbStatus] = useState<string | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
@@ -90,14 +106,36 @@ export default function Dashboard() {
         </div>
 
         <nav style={{ display: 'flex', gap: '2rem' }}>
-          <button onClick={() => setActiveTab('setup')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'setup' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'setup' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
+          <a href="#setup" onClick={() => setActiveTab('setup')} style={{ textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'setup' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'setup' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
             <Settings size={18} />
             Engines Setup
-          </button>
-          <button onClick={() => setActiveTab('map')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'map' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'map' ? 600 : 500, fontSize: '1rem' }}>
+          </a>
+          <a 
+            href={dockerStatus?.is_deploying ? undefined : "#map"}
+            onClick={(e) => {
+              if (dockerStatus?.is_deploying) {
+                e.preventDefault();
+              } else {
+                setActiveTab('map');
+              }
+            }} 
+            style={{ 
+              textDecoration: 'none',
+              background: 'none', border: 'none', cursor: dockerStatus?.is_deploying ? 'not-allowed' : 'pointer', 
+              display: 'flex', alignItems: 'center', gap: '0.5rem', 
+              color: dockerStatus?.is_deploying ? 'var(--text-secondary)' : (activeTab === 'map' ? 'var(--accent-color)' : 'var(--text-secondary)'), 
+              opacity: dockerStatus?.is_deploying ? 0.5 : 1,
+              fontWeight: activeTab === 'map' ? 600 : 500, fontSize: '1rem' 
+            }}
+            title={dockerStatus?.is_deploying ? "Deployment in progress..." : ""}
+          >
             <Activity size={18} />
-            Live Map
-          </button>
+            Live Map {dockerStatus?.is_deploying && '(Deploying...)'}
+          </a>
+          <a href="#edits" onClick={() => setActiveTab('edits')} style={{ textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'edits' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'edits' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
+            <AlertTriangle size={18} />
+            Active Edits
+          </a>
         </nav>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
@@ -184,6 +222,16 @@ export default function Dashboard() {
             zIndex: activeTab === 'setup' ? 10 : 0
           }}>
             <EngineSetup />
+          </div>
+          <div style={{ 
+            visibility: activeTab === 'edits' ? 'visible' : 'hidden', 
+            position: activeTab === 'edits' ? 'relative' : 'absolute',
+            top: 0, left: 0, right: 0, bottom: 0,
+            height: '100%',
+            overflow: 'auto',
+            zIndex: activeTab === 'edits' ? 10 : 0
+          }}>
+            <ActiveEdits />
           </div>
         </div>
       </div>
