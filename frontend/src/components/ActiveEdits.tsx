@@ -155,7 +155,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                 </div>
             ) : (
                 <>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px', alignItems: 'flex-start', overflowY: 'auto', paddingRight: '8px', paddingBottom: '24px', flex: 1 }} className="custom-scrollbar">
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '4px', alignItems: 'flex-start', overflowY: 'auto', paddingRight: '8px', paddingBottom: '24px', flex: 1 }} className="custom-scrollbar">
                         {currentData.map(ov => (
                             <div key={ov.id} onClick={() => goToMap(ov)} className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', cursor: 'pointer' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>

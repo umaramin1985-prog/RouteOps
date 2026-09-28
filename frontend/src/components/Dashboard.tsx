@@ -87,7 +87,7 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', padding: isFullScreen ? '0' : '20px 0', gap: isFullScreen ? '0' : '20px', boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', padding: isFullScreen ? '0' : '4px 0', gap: isFullScreen ? '0' : '4px', boxSizing: 'border-box' }}>
       
       {/* Header */}
       {!isFullScreen && (

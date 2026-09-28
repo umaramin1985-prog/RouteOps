@@ -252,12 +252,12 @@ export default function EngineSetup() {
 
     return (
         <>
-            <div style={{ padding: '0', height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', background: 'transparent', color: 'var(--text-primary)', fontFamily: 'Inter, system-ui, sans-serif' }}>
+            <div style={{ padding: '0', height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', background: 'transparent', color: 'var(--text-primary)', fontFamily: 'Inter, system-ui, sans-serif' }}>
 
                 {/* Top Row: Metrics */}
                 {/* Row 1 */}
-                <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: '20px' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: '4px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px' }}>
                         {/* CPU Chart */}
                         <div style={cardStyle}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -391,7 +391,7 @@ export default function EngineSetup() {
                 </div>
 
                 {/* Row 2 */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', flex: 1, minHeight: 0 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', flex: 1, minHeight: 0 }}>
                     {/* Docker Status */}
                     <div style={{ ...cardStyle }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
@@ -508,7 +508,7 @@ export default function EngineSetup() {
                                 </div>
                                 <div style={{ background: 'var(--panel-inner-bg)', padding: '12px', border: '1px solid var(--panel-border)' }}>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Active Maps</div>
-                                    <div style={{ fontSize: '13px', color: (dockerStatus?.car === 'Not Found' && dockerStatus?.foot === 'Not Found') ? '#d1d5db' : '#3b82f6' }}>{(dockerStatus?.car === 'Not Found' && dockerStatus?.foot === 'Not Found') ? '0' : (dockerStatus?.active_states?.length || 1)} Loaded</div>
+                                    <div style={{ fontSize: '13px', color: (dockerStatus?.car === 'Not Found' && dockerStatus?.foot === 'Not Found') ? '#d1d5db' : '#3b82f6' }}>{(dockerStatus?.car === 'Not Found' && dockerStatus?.foot === 'Not Found') ? '0' : (dockerStatus?.active_states?.length || 0)} Loaded</div>
                                 </div>
                                 <div style={{ background: 'var(--panel-inner-bg)', padding: '12px', border: '1px solid var(--panel-border)' }}>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Total Volume Size</div>
