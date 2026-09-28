@@ -63,7 +63,17 @@ class CommandRequest(BaseModel):
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    from sqlalchemy import inspect
+    import subprocess
+    inspector = inspect(engine)
+    
+    # Safely migrate existing databases to Alembic
+    if "users" in inspector.get_table_names() and "alembic_version" not in inspector.get_table_names():
+        log_msg("Existing database found without Alembic. Stamping head...")
+        subprocess.run(["alembic", "stamp", "head"], check=True)
+        
+    log_msg("Running database migrations...")
+    subprocess.run(["alembic", "upgrade", "head"], check=True)
     db = SessionLocal()
     admin_user = db.query(User).filter(User.username == "admin").first()
     if not admin_user:
@@ -219,10 +229,39 @@ def remove_all_containers():
         return {'status': 'success', 'removed': count}
     except Exception as e:
         return {'error': str(e)}
+last_net = None
+last_disk = None
+last_time = None
+
 @app.get('/system/metrics')
 def get_system_metrics():
+    global last_net, last_disk, last_time
+    import time
+    
     cpu = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory().percent
+    
+    current_net = psutil.net_io_counters()
+    current_disk = psutil.disk_io_counters()
+    current_time = time.time()
+    
+    net_in_rate = 0
+    net_out_rate = 0
+    disk_read_rate = 0
+    disk_write_rate = 0
+    
+    if last_time:
+        dt = current_time - last_time
+        if dt > 0:
+            net_in_rate = (current_net.bytes_recv - last_net.bytes_recv) / dt
+            net_out_rate = (current_net.bytes_sent - last_net.bytes_sent) / dt
+            disk_read_rate = (current_disk.read_bytes - last_disk.read_bytes) / dt
+            disk_write_rate = (current_disk.write_bytes - last_disk.write_bytes) / dt
+            
+    last_net = current_net
+    last_disk = current_disk
+    last_time = current_time
+
     try:
         usage = psutil.disk_usage('/data')
     except:
@@ -233,7 +272,11 @@ def get_system_metrics():
         'ram': ram, 
         'disk': usage.percent,
         'disk_total': round(usage.total / (1024**3), 2),
-        'disk_free': round(usage.free / (1024**3), 2)
+        'disk_free': round(usage.free / (1024**3), 2),
+        'net_in': net_in_rate,
+        'net_out': net_out_rate,
+        'disk_read': disk_read_rate,
+        'disk_write': disk_write_rate
     }
 
 @app.get('/system/db-status')
@@ -406,7 +449,7 @@ def process_deploy(car_port: int, foot_port: int):
         # 5. Recreate containers with new ports
         import time
         log_msg('Recreating osrm-car container with shared memory...')
-        car_c = client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='osrm2-osrm-car-1', ports={'5000/tcp': car_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+        car_c = client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-car-1', ports={'5000/tcp': car_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
         
         log_msg('Waiting for car profile to finish loading into memory before starting foot profile...')
         for _ in range(15):
@@ -415,7 +458,7 @@ def process_deploy(car_port: int, foot_port: int):
                 break
                 
         log_msg('Recreating osrm-foot container with shared memory...')
-        client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='osrm2-osrm-foot-1', ports={'5000/tcp': foot_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+        client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-foot-1', ports={'5000/tcp': foot_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
         
         log_msg('Deployment complete!')
     except Exception as e:
@@ -489,7 +532,32 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
             else:
                 log_msg(f'Downloading {url} to {file_path}')
                 try:
-                    urllib.request.urlretrieve(url, file_path)
+                    import time
+                    last_pct = [0]
+                    start_time = [time.time()]
+                    def reporthook(block_num, block_size, total_size):
+                        if total_size > 0:
+                            pct = int((block_num * block_size * 100) / total_size)
+                            if pct > 100: pct = 100
+                            if pct > last_pct[0]:
+                                last_pct[0] = pct
+                                elapsed = time.time() - start_time[0]
+                                downloaded = block_num * block_size
+                                speed_mbps = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                                speed_str = f"{speed_mbps:.1f} MB/s"
+                                # Update last line of log
+                                try:
+                                    log_path = os.path.abspath('../deploy.log')
+                                    with open(log_path, 'r') as lf:
+                                        lines = lf.readlines()
+                                    if lines:
+                                        lines[-1] = f'Downloading {url} to {file_path} - {pct}% ({speed_str})\n'
+                                    with open(log_path, 'w') as lf:
+                                        lf.writelines(lines)
+                                except:
+                                    pass
+
+                    urllib.request.urlretrieve(url, file_path, reporthook=reporthook)
                     files.append(f'/data/{state}.osm.pbf')
                 except Exception as e:
                     log_msg(f'Failed to download {state}: {e}')
@@ -524,20 +592,24 @@ def get_api_calls():
                 profile = 'car' if 'car' in c.name else 'foot'
                 logs = c.logs(tail=1000).decode('utf-8').split('\n')
                 for line in reversed(logs):
-                    if not line or '[info]' not in line or '/route/v1' not in line:
+                    if not line or '[info]' not in line or '/v1/' not in line:
                         continue
                     
                     parts = line.split(' ')
                     try:
                         latency = next((p for p in parts if 'ms' in p), 'N/A')
-                        url = next((p for p in parts if p.startswith('/route/v1')), 'N/A')
+                        url = next((p for p in parts if '/v1/' in p), 'N/A')
+                        if url == 'N/A': continue
+                        
+                        service = url.split('/v1/')[0].replace('/', '')
                         coords = url.split('?')[0].split('/')[-1]
                         
                         calls.append({
                             'profile': profile,
                             'timestamp': f'{parts[1]} {parts[2]}',
                             'latency': latency,
-                            'path': coords
+                            'path': coords,
+                            'service': service
                         })
                     except:
                         pass
@@ -554,6 +626,76 @@ def get_api_calls():
                 break
                 
         return {'calls': unique_calls[:500]}
+    except Exception as e:
+        return {'error': str(e)}
+
+@app.get('/system/docker/{profile}/logs')
+def get_docker_logs(profile: str):
+    if profile not in ('car', 'foot'):
+        return {'logs': ['Invalid profile']}
+    try:
+        import docker
+        client = docker.from_env()
+        for c in client.containers.list(all=True):
+            if f'osrm-{profile}' in c.name:
+                logs = c.logs(tail=50).decode('utf-8').split('\n')
+                return {'logs': [l for l in logs if l.strip()]}
+        return {'logs': [f'Container for profile {profile} not running']}
+    except Exception as e:
+        return {'logs': [f'Error fetching logs: {e}']}
+
+@app.get('/system/docker/{profile}/stats')
+def get_docker_detailed_stats(profile: str):
+    if profile not in ('car', 'foot'):
+        return {'error': 'Invalid profile'}
+    try:
+        import subprocess
+        import json
+        import docker
+        client = docker.from_env()
+        c_name = None
+        for c in client.containers.list(all=True):
+            if f'osrm-{profile}' in c.name and c.status == 'running':
+                c_name = c.name
+                break
+        if not c_name: return {'error': 'Not running'}
+        
+        proc = subprocess.run(['docker', 'stats', '--no-stream', '--format', 'json', c_name], capture_output=True, text=True)
+        if proc.returncode != 0: return {'error': 'Stats failed'}
+        
+        s = json.loads(proc.stdout.strip())
+        
+        def parse_bytes(s_val):
+            s_val = s_val.replace('iB', 'B').replace('B', '').strip()
+            if s_val.endswith('G'): return float(s_val[:-1]) * 1e9
+            if s_val.endswith('M'): return float(s_val[:-1]) * 1e6
+            if s_val.endswith('k'): return float(s_val[:-1]) * 1e3
+            try: return float(s_val)
+            except: return 0
+
+        mem_parts = s.get('MemUsage', '').split(' / ')
+        mem_usage = parse_bytes(mem_parts[0]) if len(mem_parts) > 0 else 0
+        mem_limit = parse_bytes(mem_parts[1]) if len(mem_parts) > 1 else 0
+        
+        net_parts = s.get('NetIO', '').split(' / ')
+        net_in = parse_bytes(net_parts[0]) if len(net_parts) > 0 else 0
+        net_out = parse_bytes(net_parts[1]) if len(net_parts) > 1 else 0
+
+        disk_parts = s.get('BlockIO', '').split(' / ')
+        disk_in = parse_bytes(disk_parts[0]) if len(disk_parts) > 0 else 0
+        disk_out = parse_bytes(disk_parts[1]) if len(disk_parts) > 1 else 0
+
+        cpu_str = s.get('CPUPerc', '0%').replace('%', '')
+        cpu = float(cpu_str) if cpu_str else 0
+
+        return {
+            'cpu': round(cpu, 1),
+            'memory': mem_usage,
+            'memory_limit': mem_limit,
+            'net_in': net_in,
+            'net_out': net_out,
+            'disk_io': disk_in + disk_out
+        }
     except Exception as e:
         return {'error': str(e)}
 
@@ -617,7 +759,34 @@ def bootstrap_system(background_tasks: BackgroundTasks):
             log_msg('Map data missing! Downloading default OSM map (Maryland)...')
             import urllib.request
             try:
-                urllib.request.urlretrieve('http://download.geofabrik.de/north-america/us/maryland-latest.osm.pbf', os.path.join(data_dir, 'maryland-latest.osm.pbf'))
+                url = 'http://download.geofabrik.de/north-america/us/maryland-latest.osm.pbf'
+                file_path = os.path.join(data_dir, 'maryland-latest.osm.pbf')
+                
+                import time
+                last_pct = [0]
+                start_time = [time.time()]
+                def reporthook(block_num, block_size, total_size):
+                    if total_size > 0:
+                        pct = int((block_num * block_size * 100) / total_size)
+                        if pct > 100: pct = 100
+                        if pct > last_pct[0]:
+                            last_pct[0] = pct
+                            elapsed = time.time() - start_time[0]
+                            downloaded = block_num * block_size
+                            speed_mbps = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                            speed_str = f"{speed_mbps:.1f} MB/s"
+                            try:
+                                log_path = os.path.abspath('../deploy.log')
+                                with open(log_path, 'r') as lf:
+                                    lines = lf.readlines()
+                                if lines:
+                                    lines[-1] = f'Map data missing! Downloading default OSM map (Maryland) - {pct}% ({speed_str})\n'
+                                with open(log_path, 'w') as lf:
+                                    lf.writelines(lines)
+                            except:
+                                pass
+
+                urllib.request.urlretrieve(url, file_path, reporthook=reporthook)
                 log_msg('Successfully downloaded default map data.')
             except Exception as e:
                 log_msg(f'Failed to download map data: {e}')

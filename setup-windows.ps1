@@ -31,6 +31,21 @@ if (Check-Command "node") {
 if (Check-Command "docker") {
     $docker_ver = docker --version
     Write-Host "[+] Docker is already installed. Version: $docker_ver" -ForegroundColor Green
+    Write-Host "`n"
+    $choice = Read-Host "Do you want to (1) Continue Fresh Install or (2) Update Existing Deployment? [1/2]"
+    if ($choice -eq '2') {
+        Write-Host "[*] Updating production deployment..." -ForegroundColor Yellow
+        git pull origin main
+        if ($LASTEXITCODE -ne 0) { Write-Host "[-] git pull failed!" -ForegroundColor Red; Read-Host "Press Enter to exit"; exit 1 }
+
+        docker compose -f docker-compose.prod.yml up -d --build
+        if ($LASTEXITCODE -ne 0) { Write-Host "[-] docker compose failed!" -ForegroundColor Red; Read-Host "Press Enter to exit"; exit 1 }
+        
+        docker image prune -f
+        Write-Host "[+] Deployment updated successfully." -ForegroundColor Green
+        Read-Host "Press Enter to exit"
+        exit 0
+    }
 } else {
     Write-Host "[*] Installing Docker Desktop..." -ForegroundColor Yellow
     winget install --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements

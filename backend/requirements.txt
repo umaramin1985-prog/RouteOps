@@ -6,3 +6,4 @@ psycopg2-binary
 docker>=7.0.0
 psutil
 pyyaml
+alembic

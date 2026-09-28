@@ -13,7 +13,7 @@ export default function Dashboard() {
     const hash = window.location.hash.replace('#', '');
     return ['map', 'setup', 'edits'].includes(hash) ? hash : 'setup';
   });
-  
+
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '');
@@ -24,8 +24,8 @@ export default function Dashboard() {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
-  
-  const [dockerStatus, setDockerStatus] = useState<{car: string, foot: string, active_states?: string[], is_deploying?: boolean} | null>(null);
+
+  const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, active_states?: string[], is_deploying?: boolean } | null>(null);
   const [dbStatus, setDbStatus] = useState<string | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
@@ -62,24 +62,24 @@ export default function Dashboard() {
 
   useEffect(() => {
     const fetchDocker = async () => {
-        try {
-            const res = await fetch('http://localhost:8000/system/docker');
-            if (res.ok) {
-                const data = await res.json();
-                setDockerStatus(data);
-            }
-        } catch (e) {}
-        try {
-            const resDb = await fetch('http://localhost:8000/system/db-status');
-            if (resDb.ok) {
-                const dbData = await resDb.json();
-                setDbStatus(dbData.status);
-            } else {
-                setDbStatus('disconnected');
-            }
-        } catch (e) {
-            setDbStatus('disconnected');
+      try {
+        const res = await fetch('http://localhost:8000/system/docker');
+        if (res.ok) {
+          const data = await res.json();
+          setDockerStatus(data);
         }
+      } catch (e) { }
+      try {
+        const resDb = await fetch('http://localhost:8000/system/db-status');
+        if (resDb.ok) {
+          const dbData = await resDb.json();
+          setDbStatus(dbData.status);
+        } else {
+          setDbStatus('disconnected');
+        }
+      } catch (e) {
+        setDbStatus('disconnected');
+      }
     };
     fetchDocker();
     const interval = setInterval(fetchDocker, 2000);
@@ -88,58 +88,58 @@ export default function Dashboard() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', padding: isFullScreen ? '0' : '4px 0', gap: isFullScreen ? '0' : '4px', boxSizing: 'border-box' }}>
-      
+
       {/* Header */}
       {!isFullScreen && (
-      <header className="glass-panel" style={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
-        padding: '12px 24px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <div style={{ background: 'var(--accent-color)', padding: '8px', borderRadius: '6px', color: 'var(--btn-text)' }}>
-            <MapIcon size={24} />
+        <header className="glass-panel" style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '12px 24px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div style={{ background: 'var(--accent-color)', padding: '8px', borderRadius: '6px', color: 'var(--btn-text)' }}>
+              <MapIcon size={24} />
+            </div>
+            <div>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>RouteOps</h2>
+            </div>
           </div>
-          <div>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>RouteOps</h2>
-          </div>
-        </div>
 
-        <nav style={{ display: 'flex', gap: '2rem' }}>
-          <a href="#setup" onClick={() => setActiveTab('setup')} style={{ textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'setup' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'setup' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
-            <Settings size={18} />
-            Engines Setup
-          </a>
-          <a 
-            href={dockerStatus?.is_deploying ? undefined : "#map"}
-            onClick={(e) => {
-              if (dockerStatus?.is_deploying) {
-                e.preventDefault();
-              } else {
-                setActiveTab('map');
-              }
-            }} 
-            style={{ 
-              textDecoration: 'none',
-              background: 'none', border: 'none', cursor: dockerStatus?.is_deploying ? 'not-allowed' : 'pointer', 
-              display: 'flex', alignItems: 'center', gap: '0.5rem', 
-              color: dockerStatus?.is_deploying ? 'var(--text-secondary)' : (activeTab === 'map' ? 'var(--accent-color)' : 'var(--text-secondary)'), 
-              opacity: dockerStatus?.is_deploying ? 0.5 : 1,
-              fontWeight: activeTab === 'map' ? 600 : 500, fontSize: '1rem' 
-            }}
-            title={dockerStatus?.is_deploying ? "Deployment in progress..." : ""}
-          >
-            <Activity size={18} />
-            Live Map {dockerStatus?.is_deploying && '(Deploying...)'}
-          </a>
-          <a href="#edits" onClick={() => setActiveTab('edits')} style={{ textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'edits' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'edits' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
-            <AlertTriangle size={18} />
-            Active Edits
-          </a>
-        </nav>
+          <nav style={{ display: 'flex', gap: '2rem' }}>
+            <a href="#setup" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) return; setActiveTab('setup'); }} style={{ textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'setup' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'setup' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
+              <Settings size={18} />
+              Engines Setup
+            </a>
+            <a
+              href={dockerStatus?.is_deploying ? undefined : "#map"}
+              onClick={(e) => {
+                if (dockerStatus?.is_deploying) {
+                  e.preventDefault();
+                } else if (!(e.ctrlKey || e.metaKey || e.shiftKey)) {
+                  setActiveTab('map');
+                }
+              }}
+              style={{
+                textDecoration: 'none',
+                background: 'none', border: 'none', cursor: dockerStatus?.is_deploying ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                color: dockerStatus?.is_deploying ? 'var(--text-secondary)' : (activeTab === 'map' ? 'var(--accent-color)' : 'var(--text-secondary)'),
+                opacity: dockerStatus?.is_deploying ? 0.5 : 1,
+                fontWeight: activeTab === 'map' ? 600 : 500, fontSize: '1rem'
+              }}
+              title={dockerStatus?.is_deploying ? "Deployment in progress..." : ""}
+            >
+              <Activity size={18} />
+              Live Map {dockerStatus?.is_deploying && '(Deploying...)'}
+            </a>
+            <a href="#edits" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) return; setActiveTab('edits'); }} style={{ textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', color: activeTab === 'edits' ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: activeTab === 'edits' ? 600 : 500, fontSize: '1rem', transition: '0.2s' }}>
+              <AlertTriangle size={18} />
+              Active Edits
+            </a>
+          </nav>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', paddingRight: '1rem', borderRight: '1px solid var(--panel-border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div className="blink" style={{ width: '8px', height: '8px', borderRadius: '50%', '--current-color': dbStatus === 'connected' ? 'var(--success)' : 'var(--danger)', border: '1px solid var(--current-color)' } as React.CSSProperties}></div>
@@ -154,41 +154,41 @@ export default function Dashboard() {
                 <span style={{ fontSize: '0.9rem' }}>Foot: {dockerStatus?.foot === 'running' ? 'Active' : 'Offline'}</span>
               </div>
             </div>
-            <button 
+            <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
               title="Toggle Theme"
             >
               {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
             </button>
-            <button 
+            <button
               onClick={() => {
                 setShowChangePassword(true);
                 setPasswordMsg('');
-              }} 
+              }}
               style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
               title="Change Password"
             >
               <Settings size={18} />
             </button>
-            <button 
+            <button
               onClick={() => {
                 localStorage.removeItem('isAuthenticated');
                 navigate('/');
-              }} 
+              }}
               style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
             >
               <LogOut size={18} />
               Sign Out
             </button>
-        </div>
-      </header>
+          </div>
+        </header>
       )}
 
       {/* Main Content Area */}
       <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', borderRadius: 0, overflow: 'hidden', minHeight: 0 }}>
         {activeTab === 'map' && (
-          <button 
+          <button
             onClick={() => setIsFullScreen(!isFullScreen)}
             style={{
               position: 'absolute', top: '20px', right: '20px', zIndex: 1001,
@@ -206,8 +206,8 @@ export default function Dashboard() {
         )}
 
         <div className="animate-fade-in" style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-          <div style={{ 
-            visibility: activeTab === 'map' ? 'visible' : 'hidden', 
+          <div style={{
+            visibility: activeTab === 'map' ? 'visible' : 'hidden',
             position: activeTab === 'map' ? 'relative' : 'absolute',
             top: 0, left: 0, right: 0, bottom: 0,
             height: '100%',
@@ -215,8 +215,8 @@ export default function Dashboard() {
           }}>
             <MapDisplay activeStates={dockerStatus?.active_states || []} isActive={activeTab === 'map'} />
           </div>
-          <div style={{ 
-            visibility: activeTab === 'setup' ? 'visible' : 'hidden', 
+          <div style={{
+            visibility: activeTab === 'setup' ? 'visible' : 'hidden',
             position: activeTab === 'setup' ? 'relative' : 'absolute',
             top: 0, left: 0, right: 0, bottom: 0,
             height: '100%',
@@ -224,8 +224,8 @@ export default function Dashboard() {
           }}>
             <EngineSetup />
           </div>
-          <div style={{ 
-            visibility: activeTab === 'edits' ? 'visible' : 'hidden', 
+          <div style={{
+            visibility: activeTab === 'edits' ? 'visible' : 'hidden',
             position: activeTab === 'edits' ? 'relative' : 'absolute',
             top: 0, left: 0, right: 0, bottom: 0,
             height: '100%',
@@ -239,16 +239,16 @@ export default function Dashboard() {
 
       {/* Footer */}
       {!isFullScreen && (
-      <footer className="glass-panel" style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        padding: '12px 24px',
-        fontSize: '0.85rem',
-        color: 'var(--text-secondary)'
-      }}>
-        <span>&copy; {new Date().getFullYear()} RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version 1.2.1</span>
-      </footer>
+        <footer className="glass-panel" style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: '12px 24px',
+          fontSize: '0.85rem',
+          color: 'var(--text-secondary)'
+        }}>
+          <span>&copy; {new Date().getFullYear()} IT Curves | RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version 1.2.2</span>
+        </footer>
       )}
 
       {/* Change Password Modal */}

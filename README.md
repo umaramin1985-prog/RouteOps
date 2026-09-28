@@ -9,13 +9,15 @@ RouteOps is a powerful, full-stack transportation management system built around
 *   **Active Route Edits Management:** Monitor and manage thousands of hot-swapped road closures and speed adjustments in a dedicated, paginated grid with real-time search filtering.
 *   **Multi-Profile Routing:** Seamlessly switch between Car (driving) and Foot (walking) routing profiles.
 *   **Advanced Navigation & Debugging:** Avoid tolls, calculate alternative routes, view detailed turn-by-turn navigation instructions, and inspect raw, unformatted JSON API responses directly from the OSRM backend.
+*   **Real-Time System Telemetry:** Monitor whole-server CPU, RAM, Disk I/O, and Network statistics directly from the dashboard using integrated metric streaming.
 *   **Beautiful UI:** A modern, glassy, fully responsive React interface built for command centers, structured across dedicated tabs (Engines Setup, Live Map, and Active Edits).
 
 ## 🏗️ Architecture
 
 *   **Frontend:** React (Vite), TypeScript, Leaflet (Map rendering)
-*   **Backend:** Python (FastAPI), SQLAlchemy (SQLite), Docker SDK
-*   **Engine:** OSRM (Open Source Routing Machine) running via Docker
+*   **Backend:** Python (FastAPI), SQLAlchemy (PostgreSQL / PostGIS), Docker SDK
+*   **Database:** Fully automated schema migrations via **Alembic**.
+*   **Engine:** OSRM (Open Source Routing Machine) running via Docker (Project `routeops`)
 
 ## 🚀 Prerequisites
 
@@ -26,10 +28,10 @@ To run this project, you must have the following installed on your machine:
 
 *(Note: Running this project natively on a Linux machine is highly recommended over Windows WSL2, as compiling OSRM graph data is extremely CPU and I/O intensive.)*
 
-## 🛠️ Installation & Setup
+## 🛠️ Installation & Setup / Updates
 
-### Automated Setup (Recommended)
-We provide automated, zero-touch setup scripts tailored for different operating systems. These scripts will automatically check for and install missing prerequisites (Docker, Python, Node.js), verify port availability, fetch the latest dependencies, and launch the entire application.
+### Automated Setup & Updater (Recommended)
+We provide dual-purpose, zero-touch scripts tailored for different operating systems. These scripts intelligently act as both **Fresh Installers** and **Production Updaters**. 
 
 Choose the script that matches your server's OS:
 
@@ -49,17 +51,12 @@ sudo bash setup-centos.sh
 .\setup-windows.ps1
 ```
 
-*(Note: If you already have all prerequisites installed, you can also simply run `python install.py` directly).*
+**How it works:**
+*   **Fresh Install:** If Docker is not installed (or you choose to run a fresh setup), the script will automatically check for and install missing prerequisites (Docker, Node.js, Python), fetch the latest dependencies, verify port availability, and launch the entire application.
+*   **Production Update:** If Docker is already installed, the script will prompt you to run an update. It will safely `git pull` the latest code, rebuild your production Docker images (`docker-compose.prod.yml`), and prune old images, resulting in zero-downtime hot-reloads! **Database schema changes are automatically migrated using Alembic on startup without manual intervention.**
 
-These scripts will:
-1. Install any missing system dependencies (Docker, Node.js, Python, Unzip).
-2. Install Python backend and Node.js frontend dependencies (pulling the latest compatible versions).
-3. Verify required ports and interactively prompt you to change OSRM ports if they are blocked (automatically updating the codebase).
-4. Download the default map data (Maryland).
-5. Start the frontend, backend, database, and OSRM engine containers via `docker-compose`.
-
-### Production Deployment
-The default setup runs the application in development mode (with hot-reloading). To run the application in a highly optimized production environment using NGINX, simply run:
+### Production Deployment (Manual)
+The setup scripts handle production deployment automatically if you choose the update route. However, to run the application in a highly optimized production environment manually, simply run:
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```

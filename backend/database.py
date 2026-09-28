@@ -32,4 +32,3 @@ class User(Base):
     password = Column(String) # For simplicity, plaintext or simple hash here
     recovery_code = Column(String, nullable=True)
 
-Base.metadata.create_all(bind=engine)

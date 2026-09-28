@@ -33,6 +33,15 @@ fi
 # Docker check
 if command_exists docker; then
     echo "[+] Docker is already installed. Version: $(docker --version)"
+    read -p "Do you want to (1) Continue Fresh Install or (2) Update Existing Deployment? [1/2] " choice
+    if [ "$choice" = "2" ]; then
+        echo "[*] Updating production deployment..."
+        git pull origin main || { echo "[-] git pull failed!"; exit 1; }
+        docker compose -f docker-compose.prod.yml up -d --build || { echo "[-] docker compose failed!"; exit 1; }
+        docker image prune -f
+        echo "[+] Deployment updated successfully."
+        exit 0
+    fi
 else
     echo "[*] Installing Docker..."
     sudo apt install docker.io docker-compose-v2 -y

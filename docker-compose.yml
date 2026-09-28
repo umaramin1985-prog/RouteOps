@@ -1,15 +1,19 @@
+name: routeops
+
 services:
   backend:
     build:
       context: ./backend
     environment:
     - WATCHFILES_FORCE_POLLING=true
+    - PROCFS_PATH=/host_proc
     ports:
     - 8000:8000
     volumes:
     - ./backend:/app
     - ./data:/data
     - /var/run/docker.sock:/var/run/docker.sock
+    - /proc:/host_proc:ro
   db:
     environment:
       POSTGRES_DB: osrm_portal
