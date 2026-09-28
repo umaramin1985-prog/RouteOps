@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Edit2, Map, Search, Share2, ExternalLink, FileText, Info, Layers, Copy, Check } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap, LayersControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -52,7 +52,7 @@ function MapFlyTo({ location }: { location: L.LatLngExpression | null }) {
 
 import stateBounds from '../stateBounds.json';
 
-export default function MapDisplay({ activeStates = [] }: { activeStates?: string[] }) {
+export default function MapDisplay({ activeStates = [], isActive = true }: { activeStates?: string[], isActive?: boolean }) {
   const marylandCenter: [number, number] = [39.0458, -76.6413];
   
   const [startPoint, setStartPoint] = useState<L.LatLng | null>(null);
@@ -79,7 +79,7 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
   const [activeOverrides, setActiveOverrides] = useState<any[]>([]);
   const [originalSpeed, setOriginalSpeed] = useState<number | null>(null);
   const [isSameRoad, setIsSameRoad] = useState<boolean>(true);
-  const [showAlternatives, setShowAlternatives] = useState<boolean>(false);
+  const [showAlternatives, setShowAlternatives] = useState<boolean>(true);
   const [altRoutes, setAltRoutes] = useState<{coords: [number, number][], distance: string, duration: string}[]>([]);
   const [routeSteps, setRouteSteps] = useState<any[]>([]);
   const [showSteps, setShowSteps] = useState<boolean>(false);
@@ -91,6 +91,10 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
   const [editReason, setEditReason] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState<string>('');
+  const [roadName, setRoadName] = useState<string>('');
+  const [cityName, setCityName] = useState<string>('');
+  const [copiedStart, setCopiedStart] = useState<boolean>(false);
+  const [copiedEnd, setCopiedEnd] = useState<boolean>(false);
 
   useEffect(() => {
     if (startPoint) setStartInputText(`${startPoint.lat.toFixed(5)}, ${startPoint.lng.toFixed(5)}`);
@@ -123,7 +127,7 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
 
   const fetchOverrides = async () => {
       try {
-          const res = await fetch('http://localhost:8000/overrides');
+          const res = await fetch('http://localhost:8000/overrides', { cache: 'no-store' });
           const data = await res.json();
           setActiveOverrides(data);
       } catch(err) {
@@ -229,9 +233,26 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                 
                 const roadNames = new Set(
                     steps.slice(0, -1)
-                         .map((s: any) => s.name || s.ref || 'unnamed')
+                         .map((s: any) => s.name || s.ref || '')
+                         .filter((name: string) => name && name.toLowerCase() !== 'unnamed')
                 );
                 setIsSameRoad(roadNames.size <= 1);
+                if (roadNames.size > 0) {
+                    setRoadName(Array.from(roadNames)[0] as string);
+                } else {
+                    setRoadName('');
+                }
+                
+                fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${startPoint.lat}&lon=${startPoint.lng}`)
+                    .then(res => res.json())
+                    .then(geoData => {
+                        if (geoData && geoData.address) {
+                            const addr = geoData.address;
+                            const city = addr.city || addr.town || addr.village || addr.municipality || addr.county || '';
+                            setCityName(city);
+                        }
+                    })
+                    .catch(err => console.error("Reverse geocoding error:", err));
             }
           } else {
             setRouteCoordinates([]);
@@ -242,6 +263,8 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             setRouteSteps([]);
             setOriginalSpeed(null);
             setIsSameRoad(true);
+            setRoadName('');
+            setCityName('');
             setRouteError(data.message || 'No route found between these points.');
           }
         })
@@ -267,6 +290,12 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
       fetchOverrides();
   }, []);
 
+  useEffect(() => {
+      if (isActive) {
+          fetchOverrides();
+      }
+  }, [isActive]);
+
   const handleMapClick = (latlng: L.LatLng) => {
     setRouteError(null);
     if (!startPoint || (startPoint && endPoint)) {
@@ -283,6 +312,7 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
       setRouteBounds(null);
       setOriginalSpeed(null);
       setIsSameRoad(true);
+      setRoadName('');
       setIsBidirectional(true);
       setEditReason('');
     } else {
@@ -315,7 +345,9 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             reason: editReason.trim(),
             lat: editLat,
             lng: editLng,
-            geometry: JSON.stringify(routeCoordinates)
+            geometry: JSON.stringify(routeCoordinates),
+            road_name: roadName,
+            city_name: cityName
         });
     } else {
         // Forward (A -> B)
@@ -328,7 +360,9 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             reason: `[Forward] ${editReason.trim()}`,
             lat: editLat,
             lng: editLng,
-            geometry: JSON.stringify(routeCoordinates)
+            geometry: JSON.stringify(routeCoordinates),
+            road_name: roadName,
+            city_name: cityName
         });
         // Backward (B -> A)
         edits.push({
@@ -340,7 +374,10 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
             reason: `[Backward] ${editReason.trim()}`,
             lat: routeCoordinates[routeCoordinates.length - 1][0],
             lng: routeCoordinates[routeCoordinates.length - 1][1],
-            geometry: JSON.stringify([...routeCoordinates].reverse())
+            lng: routeCoordinates[routeCoordinates.length - 1][1],
+            geometry: JSON.stringify([...routeCoordinates].reverse()),
+            road_name: roadName,
+            city_name: cityName
         });
     }
 
@@ -356,6 +393,7 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
         setEditReason('');
         
         fetchOverrides();
+        window.dispatchEvent(new Event('edit-applied'));
         setTimeout(fetchRoute, 3000);
         
     } catch (err) {
@@ -390,6 +428,12 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
           setRouteBounds(L.latLngBounds([ov.lat, ov.lng], [ov.lat, ov.lng]));
       }
   };
+
+  useEffect(() => {
+    const handleMapGoTo = (e: any) => handleGoTo(e.detail);
+    window.addEventListener('map-goto', handleMapGoTo);
+    return () => window.removeEventListener('map-goto', handleMapGoTo);
+  }, []);
 
   return (
     <div style={{ height: '100%', width: '100%', position: 'relative' }}>
@@ -444,10 +488,20 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
         style={{ height: '100%', width: '100%', background: 'var(--bg-color)' }}
         zoomControl={false}
       >
-        <TileLayer
-          attribution='&copy; OpenStreetMap contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
+        <LayersControl position="bottomleft">
+          <LayersControl.BaseLayer checked name="OpenStreetMap">
+            <TileLayer
+              attribution='&copy; OpenStreetMap contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+          </LayersControl.BaseLayer>
+          <LayersControl.BaseLayer name="Satellite">
+            <TileLayer
+              attribution='&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            />
+          </LayersControl.BaseLayer>
+        </LayersControl>
         <MapClickHandler onMapClick={handleMapClick} />
         <MapFitter bounds={routeBounds} />
         
@@ -534,6 +588,23 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                         </option>
                     ))}
                 </select>
+                <button
+                    onClick={() => {
+                        if (selectedState) {
+                            const boundsData = (stateBounds as any)[selectedState];
+                            if (boundsData) {
+                                setRouteBounds(L.latLngBounds([
+                                    [boundsData[0][0], boundsData[0][1]], 
+                                    [boundsData[1][0], boundsData[1][1]]
+                                ]));
+                            }
+                        }
+                    }}
+                    style={{ background: 'transparent', border: '1px solid var(--input-border)', color: 'var(--text-primary)', cursor: 'pointer', padding: '4px 8px', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: '8px', fontSize: '11px', fontWeight: 600 }}
+                    title={`Jump to ${selectedState}`}
+                >
+                    <Map size={14} style={{ marginRight: '4px' }} /> Go
+                </button>
             </div>
         )}
         
@@ -560,7 +631,20 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                 style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
             />
             {startPoint && (
-                <button onClick={() => { setStartPoint(null); setRouteCoordinates([]); setAltRoutes([]); setDistance(''); setRouteSteps([]); setShowSteps(false); setRouteError(null); }} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(startInputText);
+                            setCopiedStart(true);
+                            setTimeout(() => setCopiedStart(false), 2000);
+                        }} 
+                        style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                        title="Copy coordinates"
+                    >
+                        {copiedStart ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+                    </button>
+                    <button onClick={() => { setStartPoint(null); setRouteCoordinates([]); setAltRoutes([]); setDistance(''); setRouteSteps([]); setShowSteps(false); setRouteError(null); }} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+                </div>
             )}
         </div>
         
@@ -586,7 +670,20 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                 style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
             />
             {endPoint && (
-                <button onClick={() => { setEndPoint(null); setRouteCoordinates([]); setAltRoutes([]); setDistance(''); setRouteSteps([]); setShowSteps(false); setRouteError(null); }} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(endInputText);
+                            setCopiedEnd(true);
+                            setTimeout(() => setCopiedEnd(false), 2000);
+                        }} 
+                        style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                        title="Copy coordinates"
+                    >
+                        {copiedEnd ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+                    </button>
+                    <button onClick={() => { setEndPoint(null); setRouteCoordinates([]); setAltRoutes([]); setDistance(''); setRouteSteps([]); setShowSteps(false); setRouteError(null); }} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+                </div>
             )}
         </div>
 
@@ -660,6 +757,7 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                         setRouteError(null);
                         setOriginalSpeed(null);
                         setIsSameRoad(true);
+                        setRoadName('');
                         setIsBidirectional(true);
                     }} 
                     style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: '#ef4444', padding: '6px 12px', borderRadius: 0, cursor: 'pointer', fontSize: '12px', fontWeight: 600, transition: 'all 0.2s' }}
@@ -790,6 +888,30 @@ export default function MapDisplay({ activeStates = [] }: { activeStates?: strin
                   </div>
               </div>
               )}
+
+              {/* City Name Input */}
+              <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, padding: '8px 12px', border: '1px solid var(--input-border)' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px', minWidth: '80px' }}>City Name:</span>
+                  <input 
+                      type="text" 
+                      placeholder="e.g. Dover"
+                      value={cityName}
+                      onChange={(e) => setCityName(e.target.value)}
+                      style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '13px', outline: 'none', minWidth: 0 }}
+                  />
+              </div>
+
+              {/* Road Name Input */}
+              <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, padding: '8px 12px', border: '1px solid var(--input-border)' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px', minWidth: '80px' }}>Street Name:</span>
+                  <input 
+                      type="text" 
+                      placeholder="e.g. Main Street"
+                      value={roadName}
+                      onChange={(e) => setRoadName(e.target.value)}
+                      style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '13px', outline: 'none', minWidth: 0 }}
+                  />
+              </div>
 
               {/* Description Input */}
               <div style={{ display: 'flex', alignItems: 'flex-start', background: 'var(--input-bg)', borderRadius: 0, padding: '10px 12px', border: '1px solid var(--input-border)' }}>

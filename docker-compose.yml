@@ -1,55 +1,49 @@
-version: "3.8"
-
 services:
   backend:
     build:
       context: ./backend
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend:/app
-      - ./data:/data
-      - /var/run/docker.sock:/var/run/docker.sock # Need this to restart OSRM containers from backend!
     environment:
-      - WATCHFILES_FORCE_POLLING=true # Helps with hot-reloading on Windows
-
+    - WATCHFILES_FORCE_POLLING=true
+    ports:
+    - 8000:8000
+    volumes:
+    - ./backend:/app
+    - ./data:/data
+    - /var/run/docker.sock:/var/run/docker.sock
+  db:
+    environment:
+      POSTGRES_DB: osrm_portal
+      POSTGRES_PASSWORD: password123
+      POSTGRES_USER: admin
+    image: postgis/postgis:15-3.3
+    ports:
+    - 5433:5432
+    volumes:
+    - db_data:/var/lib/postgresql/data
   frontend:
     build:
       context: ./frontend
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     environment:
-      - CHOKIDAR_USEPOLLING=true # Helps with hot-reloading on Windows
-
-  db:
-    image: postgis/postgis:15-3.3
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: osrm_portal
+    - CHOKIDAR_USEPOLLING=true
     ports:
-      - "5433:5432"
+    - 5173:5173
     volumes:
-      - db_data:/var/lib/postgresql/data
-
+    - ./frontend:/app
+    - /app/node_modules
   osrm-car:
+    command: osrm-routed --algorithm mld /data/car.osrm
     image: osrm/osrm-backend
     ports:
-      - "5002:5000"
+    - 5002:5000
     volumes:
-      - ./data:/data
-    command: "osrm-routed --algorithm mld /data/car.osrm"
-
+    - ./data:/data
   osrm-foot:
+    command: osrm-routed --algorithm mld /data/foot.osrm
     image: osrm/osrm-backend
     ports:
-      - "5003:5000"
+    - 5003:5000
     volumes:
-      - ./data:/data
-    command: "osrm-routed --algorithm mld /data/foot.osrm"
-
+    - ./data:/data
+version: '3.8'
 volumes:
-  db_data:
+  db_data: null

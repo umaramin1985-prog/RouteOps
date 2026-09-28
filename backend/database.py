@@ -21,6 +21,8 @@ class RoadOverride(Base):
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     geometry = Column(String, nullable=True)
+    road_name = Column(String, nullable=True)
+    city_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class User(Base):

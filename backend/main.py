@@ -41,6 +41,8 @@ class OverrideRequest(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
     geometry: Optional[str] = None
+    road_name: Optional[str] = None
+    city_name: Optional[str] = None
 
 class AuthRequest(BaseModel):
     username: str
@@ -131,10 +133,11 @@ def delete_override(override_id: int, background_tasks: BackgroundTasks, db: Ses
 
 def rebuild_osrm_data():
     try:
+        data_dir = get_data_dir()
         # Create a fresh DB session for the background task
         db = SessionLocal()
         overrides = db.query(RoadOverride).all()
-        csv_path = "/data/speeds.csv" 
+        csv_path = os.path.join(data_dir, "speeds.csv") 
         
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -163,7 +166,7 @@ def rebuild_osrm_data():
                 
                 log_msg(f"Running osrm-customize inside existing {profile} container...")
                 
-                has_speeds = os.path.exists("/data/speeds.csv") and os.path.getsize("/data/speeds.csv") > 0
+                has_speeds = os.path.exists(os.path.join(data_dir, "speeds.csv")) and os.path.getsize(os.path.join(data_dir, "speeds.csv")) > 0
                 cust_cmd = f"osrm-customize /data/{profile}.osrm"
                 if has_speeds:
                     cust_cmd += " --segment-speed-file /data/speeds.csv"
@@ -203,7 +206,7 @@ def remove_all_containers():
                     
         # Clean /data directory
         import shutil
-        data_dir = os.path.abspath('/data')
+        data_dir = get_data_dir()
         if os.path.exists(data_dir):
             for f in os.listdir(data_dir):
                 if f != 'speeds.csv': # keep overrides
@@ -277,13 +280,26 @@ def get_docker_status():
 import datetime
 
 
+def get_data_dir():
+    import os
+    if os.path.exists('/.dockerenv'):
+        return '/data'
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+
+def get_docker_mounts():
+    import os
+    if os.path.exists('/.dockerenv'):
+        return {'volumes_from': [os.environ.get('HOSTNAME') or '']}
+    else:
+        return {'volumes': {get_data_dir(): {'bind': '/data', 'mode': 'rw'}}}
+
 class DeployRequest(BaseModel):
     car_port: int
     foot_port: int
 
-def stream_container_logs(client, image, command, volumes_from):
+def stream_container_logs(client, image, command, **kwargs):
     try:
-        logs = client.containers.run(image, command, volumes_from=volumes_from, remove=True, stream=True)
+        logs = client.containers.run(image, command, remove=True, stream=True, **kwargs)
         for chunk in logs:
             for line in chunk.decode('utf-8', errors='replace').splitlines():
                 if line.strip():
@@ -322,7 +338,7 @@ def process_deploy(car_port: int, foot_port: int):
                 container.remove()
                 
         # 3. Clean /data directory (except merged.osm.pbf)
-        data_dir = os.path.abspath('/data')
+        data_dir = get_data_dir()
         for f in os.listdir(data_dir):
             if f not in ['merged.osm.pbf', 'speeds.csv', 'active_states.json']:
                 p = os.path.join(data_dir, f)
@@ -340,7 +356,7 @@ def process_deploy(car_port: int, foot_port: int):
             try:
                 db_session = SessionLocal()
                 overrides = db_session.query(RoadOverride).all()
-                csv_path = "/data/speeds.csv"
+                csv_path = os.path.join(data_dir, "speeds.csv")
                 with open(csv_path, 'w', newline='') as f:
                     writer = csv.writer(f)
                     for ov in overrides:
@@ -353,44 +369,44 @@ def process_deploy(car_port: int, foot_port: int):
             except Exception as e:
                 log_msg(f"Failed to export speeds.csv: {e}")
 
-            has_speeds = os.path.exists("/data/speeds.csv") and os.path.getsize("/data/speeds.csv") > 0
+            has_speeds = os.path.exists(os.path.join(data_dir, "speeds.csv")) and os.path.getsize(os.path.join(data_dir, "speeds.csv")) > 0
             
             cust_cmd_car = ['osrm-customize', '/data/car.osrm']
             if has_speeds:
                 cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
 
             log_msg('Running OSRM Extract for CAR...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], volumes_from=[os.environ['HOSTNAME']])
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
             log_msg('Running OSRM Partition for CAR...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], volumes_from=[os.environ['HOSTNAME']])
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], **get_docker_mounts())
             
             log_msg('Creating backup of pristine CAR graph...')
-            os.system('mkdir -p /data/backup_car && cp /data/car.osrm* /data/backup_car/')
+            stream_container_logs(client, 'ubuntu', ['sh', '-c', 'mkdir -p /data/backup_car && cp /data/car.osrm* /data/backup_car/'], **get_docker_mounts())
             
             log_msg('Running OSRM Customize for CAR...')
-            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, volumes_from=[os.environ['HOSTNAME']])
+            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, **get_docker_mounts())
             
             cust_cmd_foot = ['osrm-customize', '/data/foot.osrm']
             if has_speeds:
                 cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
 
             log_msg('Running OSRM Extract for FOOT...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], volumes_from=[os.environ['HOSTNAME']])
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
             log_msg('Running OSRM Partition for FOOT...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], volumes_from=[os.environ['HOSTNAME']])
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], **get_docker_mounts())
             
             log_msg('Creating backup of pristine FOOT graph...')
-            os.system('mkdir -p /data/backup_foot && cp /data/foot.osrm* /data/backup_foot/')
+            stream_container_logs(client, 'ubuntu', ['sh', '-c', 'mkdir -p /data/backup_foot && cp /data/foot.osrm* /data/backup_foot/'], **get_docker_mounts())
             
             log_msg('Running OSRM Customize for FOOT...')
-            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, volumes_from=[os.environ['HOSTNAME']])
+            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
         else:
             log_msg('Warning: merged.osm.pbf not found. Skipping graph build.')
             
         # 5. Recreate containers with new ports
         import time
         log_msg('Recreating osrm-car container with shared memory...')
-        car_c = client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='osrm2-osrm-car-1', ports={'5000/tcp': car_port}, volumes_from=[os.environ['HOSTNAME']], detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+        car_c = client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='osrm2-osrm-car-1', ports={'5000/tcp': car_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
         
         log_msg('Waiting for car profile to finish loading into memory before starting foot profile...')
         for _ in range(15):
@@ -399,7 +415,7 @@ def process_deploy(car_port: int, foot_port: int):
                 break
                 
         log_msg('Recreating osrm-foot container with shared memory...')
-        client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='osrm2-osrm-foot-1', ports={'5000/tcp': foot_port}, volumes_from=[os.environ['HOSTNAME']], detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+        client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='osrm2-osrm-foot-1', ports={'5000/tcp': foot_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
         
         log_msg('Deployment complete!')
     except Exception as e:
@@ -446,7 +462,7 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
         
     try:
         import json, os
-        data_dir = os.path.abspath('/data')
+        data_dir = get_data_dir()
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
         with open(os.path.join(data_dir, 'active_states.json'), 'w') as f:
@@ -459,7 +475,7 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
         import subprocess
         import shutil
         log_msg(f'Starting merge for {states}')
-        data_dir = os.path.abspath('/data')
+        data_dir = get_data_dir()
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
         files = []
@@ -485,7 +501,7 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                 import docker
                 client = docker.from_env()
                 command = ['osmium', 'merge'] + files + ['-o', merged_file, '-O']
-                stream_container_logs(client, 'stefda/osmium-tool', command, volumes_from=[os.environ['HOSTNAME']])
+                stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
                 log_msg('Merge successful!')
             except Exception as e:
                 log_msg(f'Merge failed: {e}')
@@ -595,7 +611,7 @@ def bootstrap_system(background_tasks: BackgroundTasks):
             log_msg('Failed to connect to Docker daemon.')
             
         log_msg('Checking default map data (maryland-latest.osm.pbf)...')
-        data_dir = os.path.abspath('/data')
+        data_dir = get_data_dir()
         os.makedirs(data_dir, exist_ok=True)
         if not os.path.exists(os.path.join(data_dir, 'maryland-latest.osm.pbf')) and not os.path.exists(os.path.join(data_dir, 'merged.osm.pbf')):
             log_msg('Map data missing! Downloading default OSM map (Maryland)...')
@@ -636,3 +652,4 @@ def execute_command(req: CommandRequest):
         log_msg(f"Error: {str(e)}")
     
     return {'status': 'executed'}
+

@@ -57,7 +57,15 @@ export default function Login() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ 
+      display: 'flex', 
+      height: '100vh', 
+      alignItems: 'center', 
+      justifyContent: 'center',
+      backgroundImage: 'var(--login-bg)',
+      backgroundSize: 'cover',
+      backgroundPosition: 'center'
+    }}>
       <div className="glass-panel animate-fade-in" style={{ padding: '3rem', width: '100%', maxWidth: '400px' }}>
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
           <div style={{ 
@@ -88,7 +96,7 @@ export default function Login() {
         {mode === 'login' ? (
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <div style={{ position: 'relative' }}>
-              <User size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <User size={18} style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', left: '16px', color: 'var(--text-secondary)' }} />
               <input 
                 type="text" 
                 placeholder="Username" 
@@ -101,7 +109,7 @@ export default function Login() {
             </div>
             
             <div style={{ position: 'relative' }}>
-              <Lock size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <Lock size={18} style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', left: '16px', color: 'var(--text-secondary)' }} />
               <input 
                 type="password" 
                 placeholder="Password" 
@@ -123,7 +131,7 @@ export default function Login() {
         ) : (
           <form onSubmit={handleRecover} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <div style={{ position: 'relative' }}>
-              <User size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <User size={18} style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', left: '16px', color: 'var(--text-secondary)' }} />
               <input 
                 type="text" 
                 placeholder="Username" 
@@ -135,7 +143,7 @@ export default function Login() {
               />
             </div>
             <div style={{ position: 'relative' }}>
-              <Key size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <Key size={18} style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', left: '16px', color: 'var(--text-secondary)' }} />
               <input 
                 type="text" 
                 placeholder="Recovery Code (default: 123456)" 
@@ -147,7 +155,7 @@ export default function Login() {
               />
             </div>
             <div style={{ position: 'relative' }}>
-              <Lock size={18} style={{ position: 'absolute', top: '14px', left: '16px', color: 'var(--text-secondary)' }} />
+              <Lock size={18} style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', left: '16px', color: 'var(--text-secondary)' }} />
               <input 
                 type="password" 
                 placeholder="New Password" 

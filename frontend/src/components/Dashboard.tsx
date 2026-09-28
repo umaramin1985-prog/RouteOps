@@ -8,7 +8,7 @@ import ActiveEdits from './ActiveEdits';
 export default function Dashboard() {
   const navigate = useNavigate();
   const [isFullScreen, setIsFullScreen] = useState(false);
-  const [theme, setTheme] = useState('dark');
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [activeTab, setActiveTab] = useState(() => {
     const hash = window.location.hash.replace('#', '');
     return ['map', 'setup', 'edits'].includes(hash) ? hash : 'setup';
@@ -57,6 +57,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
   }, [theme]);
 
   useEffect(() => {
@@ -97,7 +98,7 @@ export default function Dashboard() {
         padding: '12px 24px'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <div style={{ background: 'var(--accent-color)', padding: '8px', borderRadius: 0, color: 'white' }}>
+          <div style={{ background: 'var(--accent-color)', padding: '8px', borderRadius: '6px', color: 'var(--btn-text)' }}>
             <MapIcon size={24} />
           </div>
           <div>
@@ -212,7 +213,7 @@ export default function Dashboard() {
             height: '100%',
             zIndex: activeTab === 'map' ? 10 : 0
           }}>
-            <MapDisplay activeStates={dockerStatus?.active_states || []} />
+            <MapDisplay activeStates={dockerStatus?.active_states || []} isActive={activeTab === 'map'} />
           </div>
           <div style={{ 
             visibility: activeTab === 'setup' ? 'visible' : 'hidden', 
@@ -231,7 +232,7 @@ export default function Dashboard() {
             overflow: 'auto',
             zIndex: activeTab === 'edits' ? 10 : 0
           }}>
-            <ActiveEdits />
+            <ActiveEdits activeStates={dockerStatus?.active_states || []} />
           </div>
         </div>
       </div>
@@ -246,7 +247,7 @@ export default function Dashboard() {
         fontSize: '0.85rem',
         color: 'var(--text-secondary)'
       }}>
-        <span>&copy; {new Date().getFullYear()} OSRM Admin Portal. All rights reserved.</span>
+        <span>&copy; {new Date().getFullYear()} RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version 1.2.1</span>
       </footer>
       )}
 
