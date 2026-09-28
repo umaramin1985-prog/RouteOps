@@ -115,8 +115,8 @@ export default function EngineSetup() {
     const [selectedStates, setSelectedStates] = useState<string[]>([]);
     const [mergeStatus, setMergeStatus] = useState<string | null>(null);
     const [apiCalls, setApiCalls] = useState<any[]>([]);
-    const [carPort, setCarPort] = useState<number>(5002);
-    const [footPort, setFootPort] = useState<number>(5003);
+    const [carPort, setCarPort] = useState<number>(5001);
+    const [footPort, setFootPort] = useState<number>(5005);
     const [searchQuery, setSearchQuery] = useState('');
     const [showModal, setShowModal] = useState(false);
     const [viewMode, setViewMode] = useState<'traffic' | 'deployment' | 'car_logs' | 'foot_logs'>('traffic');

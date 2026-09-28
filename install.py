@@ -36,7 +36,12 @@ def main():
     print('      RouteOps Setup - Fresh Machine Install      ')
     print('===================================================\033[0m')
 
-    # 0. Check Required Ports
+    # 0. Tear down existing containers to ensure a clean slate
+    print_step('Tearing down existing deployment if present...')
+    run_cmd('docker compose down 2>/dev/null || true', ignore_error=True)
+    run_cmd('docker compose -f docker-compose.prod.yml down 2>/dev/null || true', ignore_error=True)
+
+    # 1. Check Required Ports
     print_step('Verifying required ports are available...')
     
     # Check rigid ports first (5173, 5172, 5433)
@@ -47,9 +52,9 @@ def main():
         print_error('These are required for Frontend, Backend, and DB. Please free these ports.')
         sys.exit(1)
 
-    # Check flexible ports (5002, 5003)
-    car_port = 5002
-    foot_port = 5003
+    # Check flexible ports (5001, 5005)
+    car_port = 5001
+    foot_port = 5005
     
     while not check_port(car_port):
         print_error(f'Port {car_port} (OSRM Car Engine) is currently in use.')
@@ -66,7 +71,7 @@ def main():
             print_error("Please enter a valid number.")
 
     # Apply new ports to files if they changed
-    if car_port != 5002 or foot_port != 5003:
+    if car_port != 5001 or foot_port != 5005:
         print_step('Updating codebase with new OSRM ports...')
         def replace_in_file(filepath, old_str, new_str):
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -75,15 +80,15 @@ def main():
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(content)
                 
-        if car_port != 5002:
-            replace_in_file('frontend/src/components/MapDisplay.tsx', '5002', str(car_port))
-            replace_in_file('frontend/src/components/EngineSetup.tsx', '5002', str(car_port))
-            replace_in_file('docker-compose.yml', '5002:5000', f'{car_port}:5000')
+        if car_port != 5001:
+            replace_in_file('frontend/src/components/MapDisplay.tsx', '5001', str(car_port))
+            replace_in_file('frontend/src/components/EngineSetup.tsx', '5001', str(car_port))
+            replace_in_file('docker-compose.yml', '5001:5000', f'{car_port}:5000')
             
-        if foot_port != 5003:
-            replace_in_file('frontend/src/components/MapDisplay.tsx', '5003', str(foot_port))
-            replace_in_file('frontend/src/components/EngineSetup.tsx', '5003', str(foot_port))
-            replace_in_file('docker-compose.yml', '5003:5000', f'{foot_port}:5000')
+        if foot_port != 5005:
+            replace_in_file('frontend/src/components/MapDisplay.tsx', '5005', str(foot_port))
+            replace_in_file('frontend/src/components/EngineSetup.tsx', '5005', str(foot_port))
+            replace_in_file('docker-compose.yml', '5005:5000', f'{foot_port}:5000')
             
         print_success('Codebase ports updated successfully.')
 

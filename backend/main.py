@@ -297,8 +297,8 @@ def get_docker_status():
         foot_status = 'Not Found'
         car_started_at = None
         foot_started_at = None
-        car_port = 5002
-        foot_port = 5003
+        car_port = 5001
+        foot_port = 5005
         for c in containers:
             if 'osrm-car' in c.name:
                 car_status = c.status

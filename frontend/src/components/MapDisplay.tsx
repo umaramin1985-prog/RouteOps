@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Edit2, Map, Search, Share2, ExternalLink, FileText, Info, Layers, Copy, Check } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap, LayersControl } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap, LayersControl, Rectangle, GeoJSON } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -51,6 +51,7 @@ function MapFlyTo({ location }: { location: L.LatLngExpression | null }) {
 }
 
 import stateBounds from '../stateBounds.json';
+import usStatesGeoJson from '../us-states.json';
 
 export default function MapDisplay({ activeStates = [], isActive = true, dockerStatus = null }: { activeStates?: string[], isActive?: boolean, dockerStatus?: any }) {
   const marylandCenter: [number, number] = [39.0458, -76.6413];
@@ -137,7 +138,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
 
   const fetchRoute = () => {
     if (startPoint && endPoint) {
-      const port = profile === 'car' ? (dockerStatus?.car_port || 5002) : (dockerStatus?.foot_port || 5003);
+      const port = profile === 'car' ? (dockerStatus?.car_port || 5001) : (dockerStatus?.foot_port || 5005);
       const profileName = profile === 'car' ? 'driving' : 'foot';
       const altsParam = (showAlternatives || routePreference === 'shortest') ? '3' : 'false';
       
@@ -504,6 +505,13 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
         </LayersControl>
         <MapClickHandler onMapClick={handleMapClick} />
         <MapFitter bounds={routeBounds} />
+        
+        {/* Draw active state boundaries */}
+        <GeoJSON 
+            key={`geojson-${activeStates.join('-')}`} 
+            data={(usStatesGeoJson as any).features.filter((f: any) => activeStates.includes(f.properties.name.toLowerCase().replace(/ /g, '-')))}
+            style={{ color: '#3b82f6', fillOpacity: 0.05, weight: 2, dashArray: '5, 10' }}
+        />
         
         {startPoint && <Marker position={startPoint} icon={startIcon}><Popup>Start</Popup></Marker>}
         {endPoint && <Marker position={endPoint} icon={endIcon}><Popup>End</Popup></Marker>}

@@ -45,6 +45,10 @@ if (Check-Command "docker") {
         Write-Host "[+] Deployment updated successfully." -ForegroundColor Green
         Read-Host "Press Enter to exit"
         exit 0
+    } elseif ($choice -eq '1') {
+        Write-Host "[*] Tearing down existing deployment to start fresh..." -ForegroundColor Yellow
+        docker compose down 2>$null
+        docker compose -f docker-compose.prod.yml down 2>$null
     }
 } else {
     Write-Host "[*] Installing Docker Desktop..." -ForegroundColor Yellow

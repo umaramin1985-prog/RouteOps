@@ -37,7 +37,7 @@ services:
   osrm-car:
     image: osrm/osrm-backend
     ports:
-      - "5002:5000"
+      - "5001:5000"
     volumes:
       - ./data:/data
     command: "osrm-routed --algorithm mld /data/car.osrm"
@@ -46,7 +46,7 @@ services:
   osrm-foot:
     image: osrm/osrm-backend
     ports:
-      - "5003:5000"
+      - "5005:5000"
     volumes:
       - ./data:/data
     command: "osrm-routed --algorithm mld /data/foot.osrm"

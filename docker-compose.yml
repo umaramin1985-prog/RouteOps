@@ -38,14 +38,14 @@ services:
     command: osrm-routed --algorithm mld /data/car.osrm
     image: osrm/osrm-backend
     ports:
-      - 5002:5000
+      - 5001:5000
     volumes:
       - ./data:/data
   osrm-foot:
     command: osrm-routed --algorithm mld /data/foot.osrm
     image: osrm/osrm-backend
     ports:
-      - 5003:5000
+      - 5005:5000
     volumes:
       - ./data:/data
 version: '3.8'
