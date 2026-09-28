@@ -63,7 +63,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 Once complete, access the portal at:
 *   **Frontend UI:** `http://localhost:5173/dashboard`
-*   **Backend API:** `http://localhost:8000`
+*   **Backend API:** `http://localhost:5172`
 
 ### Manual Setup
 

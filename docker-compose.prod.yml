@@ -8,7 +8,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "5172:8000"
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock # Need this to restart OSRM containers from backend

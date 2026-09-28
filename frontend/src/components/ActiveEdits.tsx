@@ -15,7 +15,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
 
     const fetchOverrides = async () => {
         try {
-            const res = await fetch('http://localhost:8000/overrides', { cache: 'no-store' });
+            const res = await fetch(`http://${window.location.hostname}:5172/overrides`, { cache: 'no-store' });
             const data = await res.json();
             // Sort by created_at descending (newest first)
             data.sort((a: any, b: any) => new Date(b.created_at + 'Z').getTime() - new Date(a.created_at + 'Z').getTime());
@@ -49,7 +49,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
     const proceedRemove = async () => {
         if (overrideToRemove === null) return;
         try {
-            const res = await fetch(`http://localhost:8000/overrides/${overrideToRemove}`, { method: 'DELETE' });
+            const res = await fetch(`http://${window.location.hostname}:5172/overrides/${overrideToRemove}`, { method: 'DELETE' });
             if (res.ok) {
                 fetchOverrides();
                 window.dispatchEvent(new Event('edit-removed'));

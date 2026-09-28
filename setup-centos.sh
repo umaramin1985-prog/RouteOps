@@ -14,10 +14,10 @@ echo "[*] Updating system packages..."
 sudo yum update -y
 
 # Python check
-if command_exists python3; then
-    echo "[+] Python 3 is already installed. Version: $(python3 --version)"
+if command_exists python3 && python3 -m pip --version >/dev/null 2>&1; then
+    echo "[+] Python 3 and pip are already installed. Version: $(python3 --version)"
 else
-    echo "[*] Installing Python 3..."
+    echo "[*] Installing Python 3 and pip..."
     sudo yum install python3 python3-pip unzip -y
 fi
 

@@ -36,7 +36,7 @@ export default function Dashboard() {
     e.preventDefault();
     setPasswordMsg('');
     try {
-      const res = await fetch('http://localhost:8000/auth/change-password', {
+      const res = await fetch(`http://${window.location.hostname}:5172/auth/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', old_password: oldPassword, new_password: newPassword })
@@ -63,14 +63,14 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchDocker = async () => {
       try {
-        const res = await fetch('http://localhost:8000/system/docker');
+        const res = await fetch(`http://${window.location.hostname}:5172/system/docker`);
         if (res.ok) {
           const data = await res.json();
           setDockerStatus(data);
         }
       } catch (e) { }
       try {
-        const resDb = await fetch('http://localhost:8000/system/db-status');
+        const resDb = await fetch(`http://${window.location.hostname}:5172/system/db-status`);
         if (resDb.ok) {
           const dbData = await resDb.json();
           setDbStatus(dbData.status);
@@ -213,7 +213,7 @@ export default function Dashboard() {
             height: '100%',
             zIndex: activeTab === 'map' ? 10 : 0
           }}>
-            <MapDisplay activeStates={dockerStatus?.active_states || []} isActive={activeTab === 'map'} />
+            <MapDisplay activeStates={dockerStatus?.active_states || []} isActive={activeTab === 'map'} dockerStatus={dockerStatus} />
           </div>
           <div style={{
             visibility: activeTab === 'setup' ? 'visible' : 'hidden',

@@ -52,7 +52,7 @@ function MapFlyTo({ location }: { location: L.LatLngExpression | null }) {
 
 import stateBounds from '../stateBounds.json';
 
-export default function MapDisplay({ activeStates = [], isActive = true }: { activeStates?: string[], isActive?: boolean }) {
+export default function MapDisplay({ activeStates = [], isActive = true, dockerStatus = null }: { activeStates?: string[], isActive?: boolean, dockerStatus?: any }) {
   const marylandCenter: [number, number] = [39.0458, -76.6413];
   
   const [startPoint, setStartPoint] = useState<L.LatLng | null>(null);
@@ -127,7 +127,7 @@ export default function MapDisplay({ activeStates = [], isActive = true }: { act
 
   const fetchOverrides = async () => {
       try {
-          const res = await fetch('http://localhost:8000/overrides', { cache: 'no-store' });
+          const res = await fetch(`http://${window.location.hostname}:5172/overrides`, { cache: 'no-store' });
           const data = await res.json();
           setActiveOverrides(data);
       } catch(err) {
@@ -137,11 +137,11 @@ export default function MapDisplay({ activeStates = [], isActive = true }: { act
 
   const fetchRoute = () => {
     if (startPoint && endPoint) {
-      const port = profile === 'car' ? 5002 : 5003;
+      const port = profile === 'car' ? (dockerStatus?.car_port || 5002) : (dockerStatus?.foot_port || 5003);
       const profileName = profile === 'car' ? 'driving' : 'foot';
       const altsParam = (showAlternatives || routePreference === 'shortest') ? '3' : 'false';
       
-      let url = `http://localhost:${port}/route/v1/${profileName}/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&annotations=nodes,speed&steps=true&alternatives=${altsParam}`;
+      let url = `http://${window.location.hostname}:${port}/route/v1/${profileName}/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&annotations=nodes,speed&steps=true&alternatives=${altsParam}`;
       if (avoidTolls && profile === 'car') {
           url += '&exclude=toll';
       }
@@ -383,7 +383,7 @@ export default function MapDisplay({ activeStates = [], isActive = true }: { act
 
     try {
         for (const payload of edits) {
-            await fetch('http://localhost:8000/overrides', {
+            await fetch(`http://${window.location.hostname}:5172/overrides`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -404,7 +404,7 @@ export default function MapDisplay({ activeStates = [], isActive = true }: { act
 
   const revertOverride = async (id: number) => {
       try {
-          const res = await fetch(`http://localhost:8000/overrides/${id}`, { method: 'DELETE' });
+          const res = await fetch(`http://${window.location.hostname}:5172/overrides/${id}`, { method: 'DELETE' });
           const result = await res.json();
           showToast(result.message);
           fetchOverrides();

@@ -143,7 +143,7 @@ export default function EngineSetup() {
     useEffect(() => {
         const fetchMetrics = async () => {
             try {
-                const res = await fetch('http://localhost:8000/system/metrics');
+                const res = await fetch(`http://${window.location.hostname}:5172/system/metrics`);
                 if (res.ok) {
                     const data = await res.json();
                     setMetrics(data);
@@ -165,7 +165,7 @@ export default function EngineSetup() {
 
         const fetchDocker = async () => {
             try {
-                const res = await fetch('http://localhost:8000/system/docker');
+                const res = await fetch(`http://${window.location.hostname}:5172/system/docker`);
                 if (res.ok) {
                     const data = await res.json();
                     setDockerStatus(data);
@@ -175,8 +175,8 @@ export default function EngineSetup() {
                 }
 
                 Promise.all([
-                    fetch('http://localhost:8000/system/docker/car/stats').then(r => r.json()).catch(() => ({ error: true })),
-                    fetch('http://localhost:8000/system/docker/foot/stats').then(r => r.json()).catch(() => ({ error: true }))
+                    fetch(`http://${window.location.hostname}:5172/system/docker/car/stats`).then(r => r.json()).catch(() => ({ error: true })),
+                    fetch(`http://${window.location.hostname}:5172/system/docker/foot/stats`).then(r => r.json()).catch(() => ({ error: true }))
                 ]).then(([carStats, footStats]) => {
                     setDockerStats({
                         car: carStats.error ? null : carStats,
@@ -188,7 +188,7 @@ export default function EngineSetup() {
 
         const fetchApiCalls = async () => {
             try {
-                const res = await fetch('http://localhost:8000/system/api-calls');
+                const res = await fetch(`http://${window.location.hostname}:5172/system/api-calls`);
                 if (res.ok) {
                     const data = await res.json();
                     setApiCalls(data.calls || []);
@@ -198,21 +198,21 @@ export default function EngineSetup() {
 
         const fetchDeployLogs = async () => {
             try {
-                const res = await fetch('http://localhost:8000/system/logs');
+                const res = await fetch(`http://${window.location.hostname}:5172/system/logs`);
                 if (res.ok) {
                     const data = await res.json();
                     setDeployLogs(data.logs || []);
                 }
             } catch (e) { }
             try {
-                const resCar = await fetch('http://localhost:8000/system/docker/car/logs');
+                const resCar = await fetch(`http://${window.location.hostname}:5172/system/docker/car/logs`);
                 if (resCar.ok) {
                     const data = await resCar.json();
                     setCarLogs(data.logs || []);
                 }
             } catch (e) { }
             try {
-                const resFoot = await fetch('http://localhost:8000/system/docker/foot/logs');
+                const resFoot = await fetch(`http://${window.location.hostname}:5172/system/docker/foot/logs`);
                 if (resFoot.ok) {
                     const data = await resFoot.json();
                     setFootLogs(data.logs || []);
@@ -241,13 +241,13 @@ export default function EngineSetup() {
     const confirmRemoveAllContainers = async () => {
         setShowRemoveConfirm(false);
         try {
-            await fetch('http://localhost:8000/system/docker/remove-all', { method: 'POST' });
+            await fetch(`http://${window.location.hostname}:5172/system/docker/remove-all`, { method: 'POST' });
         } catch (e) { }
     };
 
     const handleDockerAction = async (profile: string, action: 'start' | 'stop') => {
         try {
-            await fetch(`http://localhost:8000/system/docker/${profile}/${action}`, { method: 'POST' });
+            await fetch(`http://${window.location.hostname}:5172/system/docker/${profile}/${action}`, { method: 'POST' });
         } catch (e) { }
     };
 
@@ -345,7 +345,7 @@ export default function EngineSetup() {
         setMergeStatus('Starting...');
         setDeployLogs([]);
         try {
-            fetch('http://localhost:8000/system/merge', {
+            fetch(`http://${window.location.hostname}:5172/system/merge`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ states: selectedStates })
@@ -361,7 +361,7 @@ export default function EngineSetup() {
         setViewMode('deployment');
         setDeployLogs([]);
         try {
-            await fetch('http://localhost:8000/system/merge', {
+            await fetch(`http://${window.location.hostname}:5172/system/merge`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: forceDownload })
@@ -379,7 +379,7 @@ export default function EngineSetup() {
                 if (logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
             }, 100);
             try {
-                await fetch('http://localhost:8000/system/exec', {
+                await fetch(`http://${window.location.hostname}:5172/system/exec`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ command: cmd })
@@ -592,7 +592,7 @@ export default function EngineSetup() {
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Endpoint:</div>
-                                    <div style={{ fontSize: '12px', color: dockerStatus?.car === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.car === 'running' ? 'underline' : 'none', cursor: dockerStatus?.car === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.car === 'running' ? `http://localhost:${carPort}` : 'N/A'}</div>
+                                    <div style={{ fontSize: '12px', color: dockerStatus?.car === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.car === 'running' ? 'underline' : 'none', cursor: dockerStatus?.car === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.car === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.car_port || carPort}` : 'N/A'}</div>
                                 </div>
 
 
@@ -620,7 +620,7 @@ export default function EngineSetup() {
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Endpoint:</div>
-                                    <div style={{ fontSize: '12px', color: dockerStatus?.foot === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.foot === 'running' ? 'underline' : 'none', cursor: dockerStatus?.foot === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.foot === 'running' ? `http://localhost:${footPort}` : 'N/A'}</div>
+                                    <div style={{ fontSize: '12px', color: dockerStatus?.foot === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.foot === 'running' ? 'underline' : 'none', cursor: dockerStatus?.foot === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.foot === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.foot_port || footPort}` : 'N/A'}</div>
                                 </div>
 
 

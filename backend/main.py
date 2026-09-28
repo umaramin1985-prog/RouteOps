@@ -297,13 +297,19 @@ def get_docker_status():
         foot_status = 'Not Found'
         car_started_at = None
         foot_started_at = None
+        car_port = 5002
+        foot_port = 5003
         for c in containers:
             if 'osrm-car' in c.name:
                 car_status = c.status
                 car_started_at = c.attrs.get('State', {}).get('StartedAt')
+                if c.attrs.get('HostConfig', {}).get('PortBindings', {}).get('5000/tcp'):
+                    car_port = int(c.attrs['HostConfig']['PortBindings']['5000/tcp'][0]['HostPort'])
             if 'osrm-foot' in c.name:
                 foot_status = c.status
                 foot_started_at = c.attrs.get('State', {}).get('StartedAt')
+                if c.attrs.get('HostConfig', {}).get('PortBindings', {}).get('5000/tcp'):
+                    foot_port = int(c.attrs['HostConfig']['PortBindings']['5000/tcp'][0]['HostPort'])
         active_states = []
         try:
             import json
@@ -315,7 +321,7 @@ def get_docker_status():
         logs_str = '\n'.join(deploy_logs).lower() if 'deploy_logs' in globals() else ''
         is_deploying = len(deploy_logs) > 0 and 'deployment complete!' not in logs_str if 'deploy_logs' in globals() else False
             
-        return {'car': car_status, 'foot': foot_status, 'car_started_at': car_started_at, 'foot_started_at': foot_started_at, 'active_states': active_states, 'is_deploying': is_deploying}
+        return {'car': car_status, 'foot': foot_status, 'car_started_at': car_started_at, 'foot_started_at': foot_started_at, 'car_port': car_port, 'foot_port': foot_port, 'active_states': active_states, 'is_deploying': is_deploying}
     except Exception as e:
         return {'error': str(e)}
 
