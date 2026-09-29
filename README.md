@@ -52,8 +52,11 @@ sudo bash setup-centos.sh
 ```
 
 **How it works:**
-*   **Fresh Install:** If Docker is not installed (or you choose to run a fresh setup), the script will automatically check for and install missing prerequisites (Docker, Node.js, Python), fetch the latest dependencies, verify port availability, and launch the entire application.
-*   **Production Update:** If Docker is already installed, the script will prompt you to run an update. It will safely `git pull` the latest code, rebuild your production Docker images (`docker-compose.prod.yml`), and prune old images, resulting in zero-downtime hot-reloads! **Database schema changes are automatically migrated using Alembic on startup without manual intervention.**
+When you run the script (and Docker is already installed), you will be prompted to choose an installation path:
+`Do you want to (1) Continue Fresh Install or (2) Update Existing Deployment? [1/2]`
+
+*   **Option 1 (Fresh Install):** ⚠️ **Warning: Destructive.** This option will aggressively tear down your existing Docker containers and completely wipe your compiled `data/` folder and your `osrm_portal.db` database. Choose this only if you want to start over from a completely blank slate.
+*   **Option 2 (Update Existing Deployment):** ✅ **Recommended for Updates.** This option will safely run `git pull` to fetch the latest code from your repository, rebuild your production Docker containers (`docker-compose.prod.yml`), and automatically migrate your database schema. **Your map data and active edits are perfectly preserved.**
 
 ### Production Deployment (Manual)
 The setup scripts handle production deployment automatically if you choose the update route. However, to run the application in a highly optimized production environment manually, simply run:
@@ -62,7 +65,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Once complete, access the portal at:
-*   **Frontend UI & API Proxy:** `http://localhost:5173`
+*   **Frontend UI & API Proxy:** `http://localhost/dashboard`
 
 ### Manual Setup
 
