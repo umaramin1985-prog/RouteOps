@@ -43,8 +43,12 @@ if command_exists docker; then
         exit 0
     elif [ "$choice" = "1" ]; then
         echo "[*] Tearing down existing deployment to start fresh..."
-        docker compose down 2>/dev/null || true
-        docker compose -f docker-compose.prod.yml down 2>/dev/null || true
+        docker compose down -v 2>/dev/null || true
+        docker compose -f docker-compose.prod.yml down -v 2>/dev/null || true
+        # Aggressively remove any lingering routeops containers, images, and volumes
+        docker rm -f $(docker ps -aq --filter name=routeops) 2>/dev/null || true
+        docker image rm -f $(docker images -q --filter reference="*routeops*") 2>/dev/null || true
+        docker volume rm -f $(docker volume ls -q --filter name=routeops) 2>/dev/null || true
         echo "[*] Cleaning up data folder..."
         sudo rm -rf data/* 2>/dev/null || true
     fi

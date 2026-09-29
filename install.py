@@ -38,8 +38,16 @@ def main():
 
     # 0. Tear down existing containers to ensure a clean slate
     print_step('Tearing down existing deployment if present...')
-    run_cmd('docker compose down 2>/dev/null || true', ignore_error=True)
-    run_cmd('docker compose -f docker-compose.prod.yml down 2>/dev/null || true', ignore_error=True)
+    run_cmd('docker compose down -v 2>/dev/null || true', ignore_error=True)
+    run_cmd('docker compose -f docker-compose.prod.yml down -v 2>/dev/null || true', ignore_error=True)
+    if sys.platform.startswith('win'):
+        run_cmd('powershell -Command "$containers = docker ps -aq --filter name=routeops; if ($containers) { docker rm -f $containers 2>$null }"', ignore_error=True)
+        run_cmd('powershell -Command "$images = docker images -q --filter reference=\\"*routeops*\\"; if ($images) { docker image rm -f $images 2>$null }"', ignore_error=True)
+        run_cmd('powershell -Command "$volumes = docker volume ls -q --filter name=routeops; if ($volumes) { docker volume rm -f $volumes 2>$null }"', ignore_error=True)
+    else:
+        run_cmd('docker rm -f $(docker ps -aq --filter name=routeops) 2>/dev/null || true', ignore_error=True)
+        run_cmd('docker image rm -f $(docker images -q --filter reference="*routeops*") 2>/dev/null || true', ignore_error=True)
+        run_cmd('docker volume rm -f $(docker volume ls -q --filter name=routeops) 2>/dev/null || true', ignore_error=True)
 
     # 1. Check Required Ports
     print_step('Verifying required ports are available...')

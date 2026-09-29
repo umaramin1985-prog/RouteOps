@@ -47,8 +47,14 @@ if (Check-Command "docker") {
         exit 0
     } elseif ($choice -eq '1') {
         Write-Host "[*] Tearing down existing deployment to start fresh..." -ForegroundColor Yellow
-        docker compose down 2>$null
-        docker compose -f docker-compose.prod.yml down 2>$null
+        docker compose down -v 2>$null
+        docker compose -f docker-compose.prod.yml down -v 2>$null
+        $containers = docker ps -aq --filter name=routeops
+        if ($containers) { docker rm -f $containers 2>$null }
+        $images = docker images -q --filter reference="*routeops*"
+        if ($images) { docker image rm -f $images 2>$null }
+        $volumes = docker volume ls -q --filter name=routeops
+        if ($volumes) { docker volume rm -f $volumes 2>$null }
         Write-Host "[*] Cleaning up data folder..." -ForegroundColor Yellow
         Remove-Item -Path "data\*" -Recurse -Force -ErrorAction SilentlyContinue
     }
