@@ -55,11 +55,14 @@ def main():
         run_cmd('docker volume rm -f $(docker volume ls -q --filter name=routeops) 2>/dev/null || true', ignore_error=True)
         run_cmd('docker volume rm -f $(docker volume ls -q --filter name=osrm) 2>/dev/null || true', ignore_error=True)
         
-    print_step('Cleaning up data folder...')
+    print_step('Cleaning up data folder and database...')
     if sys.platform.startswith('win'):
         run_cmd('powershell -Command "Remove-Item -Path data\\* -Recurse -Force -ErrorAction SilentlyContinue"', ignore_error=True)
+        run_cmd('powershell -Command "Remove-Item -Path backend\\osrm_portal.db -Force -ErrorAction SilentlyContinue"', ignore_error=True)
     else:
         run_cmd('sudo rm -rf data/* 2>/dev/null || true', ignore_error=True)
+        run_cmd('sudo rm -f backend/osrm_portal.db 2>/dev/null || true', ignore_error=True)
+
 
     # 1. Check Required Ports
     print_step('Verifying required ports are available...')

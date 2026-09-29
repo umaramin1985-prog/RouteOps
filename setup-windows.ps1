@@ -61,8 +61,9 @@ if (Check-Command "docker") {
         if ($volumes) { docker volume rm -f $volumes 2>$null }
         $volumesOsrm = docker volume ls -q --filter name=osrm
         if ($volumesOsrm) { docker volume rm -f $volumesOsrm 2>$null }
-        Write-Host "[*] Cleaning up data folder..." -ForegroundColor Yellow
+        Write-Host "[*] Cleaning up data folder and database..." -ForegroundColor Yellow
         Remove-Item -Path "data\*" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "backend\osrm_portal.db" -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "[*] Installing Docker Desktop..." -ForegroundColor Yellow
