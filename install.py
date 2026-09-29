@@ -125,13 +125,13 @@ def main():
     print_success('Docker is running.')
 
     # 4. Start Docker Compose
-    print_step('Spinning up the OSRM stack via docker-compose...')
-    run_cmd('docker compose up -d')
+    print_step('Spinning up the OSRM stack via docker-compose.prod.yml...')
+    run_cmd('docker compose -f docker-compose.prod.yml up -d --build')
     print_success('Docker containers started successfully.')
 
     print('\n\033[1;36m===================================================')
     print('  INSTALLATION COMPLETE!  ')
-    print('  Frontend UI: http://localhost:5173/dashboard')
+    print('  Frontend UI: http://localhost/dashboard')
     print('  Backend API: http://localhost:5172')
     print('===================================================\033[0m\n')
 

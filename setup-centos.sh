@@ -36,7 +36,7 @@ if command_exists docker; then
     read -p "Do you want to (1) Continue Fresh Install or (2) Update Existing Deployment? [1/2] " choice
     if [ "$choice" = "2" ]; then
         echo "[*] Updating production deployment..."
-        git pull origin main || { echo "[-] git pull failed!"; exit 1; }
+        git pull origin main || echo "[-] git pull failed! (If you downloaded a ZIP, this is normal. Ensure you manually copy the latest files here.)"
         docker compose -f docker-compose.prod.yml up -d --build || { echo "[-] docker compose failed!"; exit 1; }
         docker image prune -f
         echo "[+] Deployment updated successfully."
