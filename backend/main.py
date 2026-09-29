@@ -65,11 +65,15 @@ class CommandRequest(BaseModel):
 def on_startup():
     from sqlalchemy import inspect
     import subprocess
+    
+    # 1. Ensure all tables are created if this is a fresh install
+    Base.metadata.create_all(bind=engine)
+    
     inspector = inspect(engine)
     
-    # Safely migrate existing databases to Alembic
-    if "users" in inspector.get_table_names() and "alembic_version" not in inspector.get_table_names():
-        log_msg("Existing database found without Alembic. Stamping head...")
+    # 2. Safely migrate existing databases to Alembic
+    if "alembic_version" not in inspector.get_table_names():
+        log_msg("No Alembic version found. Stamping head...")
         subprocess.run(["alembic", "stamp", "head"], check=True)
         
     log_msg("Running database migrations...")
