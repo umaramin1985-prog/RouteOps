@@ -789,46 +789,13 @@ def bootstrap_system(background_tasks: BackgroundTasks):
         except Exception as e:
             log_msg('Failed to connect to Docker daemon.')
             
-        log_msg('Checking default map data (maryland-latest.osm.pbf)...')
+        log_msg('Checking default map data...')
         data_dir = get_data_dir()
         os.makedirs(data_dir, exist_ok=True)
-        if not os.path.exists(os.path.join(data_dir, 'maryland-latest.osm.pbf')) and not os.path.exists(os.path.join(data_dir, 'merged.osm.pbf')):
-            log_msg('Map data missing! Downloading default OSM map (Maryland)...')
-            import urllib.request
-            try:
-                url = 'http://download.geofabrik.de/north-america/us/maryland-latest.osm.pbf'
-                file_path = os.path.join(data_dir, 'maryland-latest.osm.pbf')
-                
-                import time
-                last_pct = [0]
-                start_time = [time.time()]
-                def reporthook(block_num, block_size, total_size):
-                    if total_size > 0:
-                        pct = int((block_num * block_size * 100) / total_size)
-                        if pct > 100: pct = 100
-                        if pct > last_pct[0]:
-                            last_pct[0] = pct
-                            elapsed = time.time() - start_time[0]
-                            downloaded = block_num * block_size
-                            speed_mbps = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                            speed_str = f"{speed_mbps:.1f} MB/s"
-                            try:
-                                log_path = os.path.abspath('../deploy.log')
-                                with open(log_path, 'r') as lf:
-                                    lines = lf.readlines()
-                                if lines:
-                                    lines[-1] = f'Map data missing! Downloading default OSM map (Maryland) - {pct}% ({speed_str})\n'
-                                with open(log_path, 'w') as lf:
-                                    lf.writelines(lines)
-                            except:
-                                pass
-
-                urllib.request.urlretrieve(url, file_path, reporthook=reporthook)
-                log_msg('Successfully downloaded default map data.')
-            except Exception as e:
-                log_msg(f'Failed to download map data: {e}')
+        if not os.path.exists(os.path.join(data_dir, 'merged.osm.pbf')):
+            log_msg('Notice: Map data missing. Awaiting user to build map via UI.')
         else:
-            log_msg('Map data already exists. Skipping download.')
+            log_msg('Map data already exists.')
             
         log_msg('Checking OSRM Container states...')
         for c in client.containers.list(all=True):
