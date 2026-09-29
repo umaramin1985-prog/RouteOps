@@ -34,23 +34,5 @@ services:
       - db_data:/var/lib/postgresql/data
     restart: always
 
-  osrm-car:
-    image: osrm/osrm-backend
-    ports:
-      - "5001:5000"
-    volumes:
-      - ./data:/data
-    command: "osrm-routed --algorithm mld /data/car.osrm"
-    restart: always
-
-  osrm-foot:
-    image: osrm/osrm-backend
-    ports:
-      - "5005:5000"
-    volumes:
-      - ./data:/data
-    command: "osrm-routed --algorithm mld /data/foot.osrm"
-    restart: always
-
 volumes:
   db_data:

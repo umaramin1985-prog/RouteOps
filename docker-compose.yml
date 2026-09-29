@@ -32,20 +32,6 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-  osrm-car:
-    command: osrm-routed --algorithm mld /data/car.osrm
-    image: osrm/osrm-backend
-    ports:
-      - 5001:5000
-    volumes:
-      - ./data:/data
-  osrm-foot:
-    command: osrm-routed --algorithm mld /data/foot.osrm
-    image: osrm/osrm-backend
-    ports:
-      - 5005:5000
-    volumes:
-      - ./data:/data
 version: '3.8'
 volumes:
   db_data: null
