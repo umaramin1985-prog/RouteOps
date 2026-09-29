@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Edit2, Map, Search, Share2, ExternalLink, FileText, Info, Layers, Copy, Check } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap, LayersControl, Rectangle, GeoJSON } from 'react-leaflet';
+import { Map, Copy, Check } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap, LayersControl, GeoJSON } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -40,20 +40,12 @@ function MapFitter({ bounds }: { bounds: L.LatLngBounds | null }) {
     return null;
 }
 
-function MapFlyTo({ location }: { location: L.LatLngExpression | null }) {
-    const map = useMap();
-    useEffect(() => {
-        if (location) {
-            map.flyTo(location, 16);
-        }
-    }, [location, map]);
-    return null;
-}
 
 import stateBounds from '../stateBounds.json';
 import usStatesGeoJson from '../us-states.json';
 
 export default function MapDisplay({ activeStates = [], isActive = true, dockerStatus = null }: { activeStates?: string[], isActive?: boolean, dockerStatus?: any }) {
+  const role = localStorage.getItem('role') || 'admin';
   const marylandCenter: [number, number] = [39.0458, -76.6413];
   
   const [startPoint, setStartPoint] = useState<L.LatLng | null>(null);
@@ -68,7 +60,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
   const [showRawJson, setShowRawJson] = useState<boolean>(false);
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [copiedJson, setCopiedJson] = useState<boolean>(false);
-  const [focusRoute, setFocusRoute] = useState<[number, number][] | null>(null);
+
   const [routeBounds, setRouteBounds] = useState<L.LatLngBounds | null>(null);
   const [profile, setProfile] = useState<'car' | 'foot'>('car');
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -78,7 +70,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
   const [newSpeed, setNewSpeed] = useState<number>(30);
   const [isClosing, setIsClosing] = useState<boolean>(false);
   const [activeOverrides, setActiveOverrides] = useState<any[]>([]);
-  const [originalSpeed, setOriginalSpeed] = useState<number | null>(null);
+
   const [isSameRoad, setIsSameRoad] = useState<boolean>(true);
   const [showAlternatives, setShowAlternatives] = useState<boolean>(true);
   const [altRoutes, setAltRoutes] = useState<{coords: [number, number][], distance: string, duration: string}[]>([]);
@@ -128,7 +120,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
 
   const fetchOverrides = async () => {
       try {
-          const res = await fetch(`http://${window.location.hostname}:5172/overrides`, { cache: 'no-store' });
+          const res = await fetch(`/api/overrides`, { cache: 'no-store' });
           const data = await res.json();
           setActiveOverrides(data);
       } catch(err) {
@@ -222,7 +214,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
                 if (primaryRoute.legs[0].annotation.speed && primaryRoute.legs[0].annotation.speed.length > 0) {
                     const speedMs = primaryRoute.legs[0].annotation.speed[0];
                     const speedMph = Math.round(speedMs * 2.23694);
-                    setOriginalSpeed(speedMph);
+
                     setNewSpeed(speedMph);
                     setBackSpeed(speedMph);
                 }
@@ -262,7 +254,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
             setMainRouteInfo(null);
             setRouteNodes([]);
             setRouteSteps([]);
-            setOriginalSpeed(null);
+            setRouteSteps([]);
             setIsSameRoad(true);
             setRoadName('');
             setCityName('');
@@ -277,7 +269,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
             setMainRouteInfo(null);
             setRouteNodes([]);
             setRouteSteps([]);
-            setOriginalSpeed(null);
+            setRouteSteps([]);
             setRouteError('Failed to connect to the routing engine.');
         });
     }
@@ -309,9 +301,8 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
       setRouteNodes([]);
       setRouteSteps([]);
       setShowSteps(false);
-      setFocusRoute(null);
       setRouteBounds(null);
-      setOriginalSpeed(null);
+
       setIsSameRoad(true);
       setRoadName('');
       setIsBidirectional(true);
@@ -329,8 +320,8 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
         return;
     }
     
-    const from_node = routeNodes[0].toString();
-    const to_node = routeNodes[1].toString();
+    const from_node = routeNodes.join(',');
+    const to_node = '';
     const editLat = routeCoordinates[0][0];
     const editLng = routeCoordinates[0][1];
     
@@ -367,14 +358,13 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
         });
         // Backward (B -> A)
         edits.push({
-            from_node: to_node,
-            to_node: from_node,
+            from_node: [...routeNodes].reverse().join(','),
+            to_node: '',
             speed_kmh: isBackClosing ? 0 : Math.round(backSpeed * 1.60934),
             is_closed: isBackClosing,
             is_bidirectional: false,
             reason: `[Backward] ${editReason.trim()}`,
             lat: routeCoordinates[routeCoordinates.length - 1][0],
-            lng: routeCoordinates[routeCoordinates.length - 1][1],
             lng: routeCoordinates[routeCoordinates.length - 1][1],
             geometry: JSON.stringify([...routeCoordinates].reverse()),
             road_name: roadName,
@@ -384,7 +374,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
 
     try {
         for (const payload of edits) {
-            await fetch(`http://${window.location.hostname}:5172/overrides`, {
+            await fetch(`/api/overrides`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -403,25 +393,11 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
     }
   };
 
-  const revertOverride = async (id: number) => {
-      try {
-          const res = await fetch(`http://${window.location.hostname}:5172/overrides/${id}`, { method: 'DELETE' });
-          const result = await res.json();
-          showToast(result.message);
-          fetchOverrides();
-          setFocusRoute(null);
-          setTimeout(fetchRoute, 3000);
-      } catch(err) {
-          console.error(err);
-          showToast("Failed to revert override.");
-      }
-  };
 
   const handleGoTo = (ov: any) => {
       if (ov.geometry) {
           try {
               const coords = JSON.parse(ov.geometry);
-              setFocusRoute(coords);
               setRouteBounds(L.polyline(coords).getBounds());
           } catch(e) {}
       } else if (ov.lat && ov.lng) {
@@ -761,9 +737,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
                         setRouteNodes([]);
                         setRouteSteps([]);
                         setShowSteps(false);
-                        setFocusRoute(null);
                         setRouteError(null);
-                        setOriginalSpeed(null);
                         setIsSameRoad(true);
                         setRoadName('');
                         setIsBidirectional(true);
@@ -933,17 +907,18 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
 
               {/* Apply Button */}
               <button 
+                  disabled={role === 'guest'}
                   onClick={applyRoadEdit} 
                   style={{ 
                       width: '100%',
                       background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', 
                       color: 'white', border: 'none', padding: '12px', borderRadius: 0, 
-                      fontSize: '13px', fontWeight: 700, cursor: 'pointer', transition: 'all 0.2s',
+                      fontSize: '13px', fontWeight: 700, cursor: role === 'guest' ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
                       boxShadow: '0 4px 15px rgba(16,185,129,0.4)',
-                      textTransform: 'uppercase', letterSpacing: '0.5px'
+                      textTransform: 'uppercase', letterSpacing: '0.5px', opacity: role === 'guest' ? 0.5 : 1
                   }}
-                  onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
-                  onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+                  onMouseOver={(e) => { if(role !== 'guest') e.currentTarget.style.transform = 'translateY(-2px)' }}
+                  onMouseOut={(e) => { if(role !== 'guest') e.currentTarget.style.transform = 'translateY(0)' }}
               >
                   Apply Edit
               </button>

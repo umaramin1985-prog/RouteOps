@@ -49,6 +49,8 @@ if (Check-Command "docker") {
         Write-Host "[*] Tearing down existing deployment to start fresh..." -ForegroundColor Yellow
         docker compose down 2>$null
         docker compose -f docker-compose.prod.yml down 2>$null
+        Write-Host "[*] Cleaning up data folder..." -ForegroundColor Yellow
+        Remove-Item -Path "data\*" -Recurse -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "[*] Installing Docker Desktop..." -ForegroundColor Yellow

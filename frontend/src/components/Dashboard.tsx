@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import MapDisplay from './MapDisplay';
 import EngineSetup from './EngineSetup';
 import ActiveEdits from './ActiveEdits';
+import packageJson from '../../package.json';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -36,7 +37,7 @@ export default function Dashboard() {
     e.preventDefault();
     setPasswordMsg('');
     try {
-      const res = await fetch(`http://${window.location.hostname}:5172/auth/change-password`, {
+      const res = await fetch(`/api/auth/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', old_password: oldPassword, new_password: newPassword })
@@ -63,14 +64,14 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchDocker = async () => {
       try {
-        const res = await fetch(`http://${window.location.hostname}:5172/system/docker`);
+        const res = await fetch(`/api/system/docker`);
         if (res.ok) {
           const data = await res.json();
           setDockerStatus(data);
         }
       } catch (e) { }
       try {
-        const resDb = await fetch(`http://${window.location.hostname}:5172/system/db-status`);
+        const resDb = await fetch(`/api/system/db-status`);
         if (resDb.ok) {
           const dbData = await resDb.json();
           setDbStatus(dbData.status);
@@ -222,7 +223,7 @@ export default function Dashboard() {
             height: '100%',
             zIndex: activeTab === 'setup' ? 10 : 0
           }}>
-            <EngineSetup />
+            <EngineSetup isActive={activeTab === 'setup'} />
           </div>
           <div style={{
             visibility: activeTab === 'edits' ? 'visible' : 'hidden',
@@ -247,7 +248,7 @@ export default function Dashboard() {
           fontSize: '0.85rem',
           color: 'var(--text-secondary)'
         }}>
-          <span>&copy; {new Date().getFullYear()} IT Curves | RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version 1.2.2</span>
+          <span>&copy; {new Date().getFullYear()} IT Curves | RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
         </footer>
       )}
 

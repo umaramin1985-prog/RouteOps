@@ -1,4 +1,4 @@
-# RouteOps 🚗 🗺️
+# RouteOps v2.0.0 🚗 🗺️
 
 RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)**. It provides a sleek, dark-mode web dashboard to deploy routing engines for specific US states on-the-fly, calculate routes (Car & Foot), and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
 
@@ -62,8 +62,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Once complete, access the portal at:
-*   **Frontend UI:** `http://localhost:5173/dashboard`
-*   **Backend API:** `http://localhost:5172`
+*   **Frontend UI & API Proxy:** `http://localhost:5173`
 
 ### Manual Setup
 

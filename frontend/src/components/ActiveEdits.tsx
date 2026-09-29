@@ -3,6 +3,7 @@ import { Trash2, Search, ChevronLeft, ChevronRight, Map } from 'lucide-react';
 import stateBounds from '../stateBounds.json';
 
 export default function ActiveEdits({ activeStates = [] }: { activeStates?: string[] }) {
+    const role = localStorage.getItem('role') || 'admin';
     const [activeOverrides, setActiveOverrides] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [overrideToRemove, setOverrideToRemove] = useState<number | null>(null);
@@ -15,7 +16,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
 
     const fetchOverrides = async () => {
         try {
-            const res = await fetch(`http://${window.location.hostname}:5172/overrides`, { cache: 'no-store' });
+            const res = await fetch(`/api/overrides`, { cache: 'no-store' });
             const data = await res.json();
             // Sort by created_at descending (newest first)
             data.sort((a: any, b: any) => new Date(b.created_at + 'Z').getTime() - new Date(a.created_at + 'Z').getTime());
@@ -49,7 +50,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
     const proceedRemove = async () => {
         if (overrideToRemove === null) return;
         try {
-            const res = await fetch(`http://${window.location.hostname}:5172/overrides/${overrideToRemove}`, { method: 'DELETE' });
+            const res = await fetch(`/api/overrides/${overrideToRemove}`, { method: 'DELETE' });
             if (res.ok) {
                 fetchOverrides();
                 window.dispatchEvent(new Event('edit-removed'));
@@ -126,7 +127,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                         <select
                             value={selectedStateFilter}
                             onChange={(e) => setSelectedStateFilter(e.target.value)}
-                            style={{ width: '100%', padding: '10px 16px', paddingRight: '40px', borderRadius: '8px', border: '1px solid var(--input-border)', background: 'var(--input-bg)', color: 'var(--text-primary)', outline: 'none', appearance: 'none', cursor: 'pointer', fontSize: '14px' }}
+                            style={{ width: '100%', height: '40px', padding: '0 40px 0 16px', borderRadius: '8px', border: '1px solid var(--input-border)', background: 'var(--input-bg)', color: 'var(--text-primary)', outline: 'none', appearance: 'none', cursor: 'pointer', fontSize: '14px', boxSizing: 'border-box' }}
                         >
                             <option value="all">All Active States</option>
                             {activeStates.map(s => (
@@ -136,16 +137,16 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                         <ChevronRight size={16} style={{ position: 'absolute', right: '16px', top: '50%', transform: 'translateY(-50%) rotate(90deg)', color: 'var(--text-secondary)', pointerEvents: 'none' }} />
                     </div>
                     
-                    <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', border: '1px solid var(--input-border)', borderRadius: '8px', padding: '6px 12px', width: '300px' }}>
-                    <Search size={16} color="var(--text-secondary)" style={{ marginRight: '8px' }} />
-                    <input 
-                        type="text" 
-                        placeholder="Search by reason, node ID, or status..." 
-                        value={searchTerm}
-                        onChange={e => setSearchTerm(e.target.value)}
-                        style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', width: '100%', fontSize: '13px' }}
-                    />
-                </div>
+                    <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', border: '1px solid var(--input-border)', borderRadius: '8px', padding: '0 12px', height: '40px', width: '300px', boxSizing: 'border-box' }}>
+                        <Search size={16} color="var(--text-secondary)" style={{ marginRight: '8px' }} />
+                        <input 
+                            type="text" 
+                            placeholder="Search by reason, node ID, or status..." 
+                            value={searchTerm}
+                            onChange={e => setSearchTerm(e.target.value)}
+                            style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', width: '100%', fontSize: '13px' }}
+                        />
+                    </div>
                 </div>
             </div>
 
@@ -173,8 +174,9 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                                     </div>
                                     <div style={{ display: 'flex', gap: '8px' }}>
                                         <button 
+                                            disabled={role === 'guest'}
                                             onClick={(e) => { e.stopPropagation(); confirmRemove(ov.id); }}
-                                            style={{ background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600, padding: '4px' }}
+                                            style={{ background: 'transparent', border: 'none', color: role === 'guest' ? 'var(--text-secondary)' : 'var(--danger)', cursor: role === 'guest' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600, padding: '4px' }}
                                             title="Remove this edit"
                                         >
                                             <Trash2 size={16} /> Remove
@@ -246,10 +248,11 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                                 Cancel
                             </button>
                             <button 
+                                disabled={role === 'guest'}
                                 onClick={(e) => { e.stopPropagation(); proceedRemove(); }}
-                                style={{ background: 'var(--danger)', border: 'none', color: 'white', padding: '6px 16px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 600, transition: 'all 0.2s' }}
-                                onMouseOver={(e) => e.currentTarget.style.opacity = '0.9'}
-                                onMouseOut={(e) => e.currentTarget.style.opacity = '1'}
+                                style={{ background: 'var(--danger)', border: 'none', color: 'white', padding: '6px 16px', borderRadius: '4px', cursor: role === 'guest' ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: 600, transition: 'all 0.2s', opacity: role === 'guest' ? 0.5 : 1 }}
+                                onMouseOver={(e) => { if(role !== 'guest') e.currentTarget.style.opacity = '0.9' }}
+                                onMouseOut={(e) => { if(role !== 'guest') e.currentTarget.style.opacity = '1' }}
                             >
                                 Remove
                             </button>

@@ -16,13 +16,14 @@ export default function Login() {
     e.preventDefault();
     setError('');
     try {
-      const res = await fetch(`http://${window.location.hostname}:5172/auth/login`, {
+      const res = await fetch(`/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       });
       if (res.ok) {
         localStorage.setItem('isAuthenticated', 'true');
+        localStorage.setItem('role', 'admin');
         navigate('/dashboard');
       } else {
         const data = await res.json();
@@ -38,7 +39,7 @@ export default function Login() {
     setError('');
     setSuccessMsg('');
     try {
-      const res = await fetch(`http://${window.location.hostname}:5172/auth/recover-password`, {
+      const res = await fetch(`/api/auth/recover-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, recovery_code: recoveryCode, new_password: newPassword })
@@ -124,9 +125,18 @@ export default function Login() {
             <button type="submit" className="btn-primary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
               Sign In <ArrowRight size={18} />
             </button>
-            <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccessMsg(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '0.9rem' }}>
-              Forgot Password?
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <button type="button" onClick={() => { setMode('forgot'); setError(''); setSuccessMsg(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '0.9rem' }}>
+                Forgot Password?
+                </button>
+                <button type="button" onClick={() => {
+                    localStorage.setItem('isAuthenticated', 'true');
+                    localStorage.setItem('role', 'guest');
+                    navigate('/dashboard');
+                }} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.9rem', textDecoration: 'underline' }}>
+                Guest Login
+                </button>
+            </div>
           </form>
         ) : (
           <form onSubmit={handleRecover} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>

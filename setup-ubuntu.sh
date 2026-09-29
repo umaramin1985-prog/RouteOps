@@ -45,6 +45,8 @@ if command_exists docker; then
         echo "[*] Tearing down existing deployment to start fresh..."
         docker compose down 2>/dev/null || true
         docker compose -f docker-compose.prod.yml down 2>/dev/null || true
+        echo "[*] Cleaning up data folder..."
+        sudo rm -rf data/* 2>/dev/null || true
     fi
 else
     echo "[*] Installing Docker..."

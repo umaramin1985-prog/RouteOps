@@ -131,6 +131,22 @@ def create_override(override: OverrideRequest, background_tasks: BackgroundTasks
     
     return {"status": "success", "message": "Override saved and OSRM rebuild triggered.", "data": db_override}
 
+from typing import List
+@app.post("/overrides/bulk")
+def create_overrides_bulk(overrides: List[OverrideRequest], background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    db_overrides = []
+    for override in overrides:
+        db_override = RoadOverride(**override.dict())
+        db.add(db_override)
+        db_overrides.append(db_override)
+    
+    db.commit()
+    for db_override in db_overrides:
+        db.refresh(db_override)
+        
+    background_tasks.add_task(rebuild_osrm_data)
+    return {"status": "success", "message": f"{len(overrides)} overrides saved and OSRM rebuild triggered."}
+
 @app.delete("/overrides/{override_id}")
 def delete_override(override_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ov = db.query(RoadOverride).filter(RoadOverride.id == override_id).first()
@@ -154,9 +170,17 @@ def rebuild_osrm_data():
             for ov in overrides:
                 # OSRM expects integer speeds. 1 km/h is heavily penalized.
                 speed = 1 if ov.is_closed else max(1, int(round(ov.speed_kmh)))
-                writer.writerow([ov.from_node, ov.to_node, speed])
-                if ov.is_bidirectional:
-                    writer.writerow([ov.to_node, ov.from_node, speed])
+                
+                if ',' in ov.from_node:
+                    nodes = ov.from_node.split(',')
+                    for i in range(len(nodes) - 1):
+                        writer.writerow([nodes[i], nodes[i+1], speed])
+                        if ov.is_bidirectional:
+                            writer.writerow([nodes[i+1], nodes[i], speed])
+                else:
+                    writer.writerow([ov.from_node, ov.to_node, speed])
+                    if ov.is_bidirectional:
+                        writer.writerow([ov.to_node, ov.from_node, speed])
         db.close()
         
         # Connect to Docker
@@ -410,9 +434,16 @@ def process_deploy(car_port: int, foot_port: int):
                     writer = csv.writer(f)
                     for ov in overrides:
                         speed = 1 if ov.is_closed else max(1, int(round(ov.speed_kmh)))
-                        writer.writerow([ov.from_node, ov.to_node, speed])
-                        if ov.is_bidirectional:
-                            writer.writerow([ov.to_node, ov.from_node, speed])
+                        if ',' in ov.from_node:
+                            nodes = ov.from_node.split(',')
+                            for i in range(len(nodes) - 1):
+                                writer.writerow([nodes[i], nodes[i+1], speed])
+                                if ov.is_bidirectional:
+                                    writer.writerow([nodes[i+1], nodes[i], speed])
+                        else:
+                            writer.writerow([ov.from_node, ov.to_node, speed])
+                            if ov.is_bidirectional:
+                                writer.writerow([ov.to_node, ov.from_node, speed])
                 db_session.close()
                 log_msg(f"Exported {len(overrides)} road overrides to speeds.csv")
             except Exception as e:

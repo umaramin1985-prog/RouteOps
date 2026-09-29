@@ -7,8 +7,6 @@ services:
     environment:
       - WATCHFILES_FORCE_POLLING=true
       - PROCFS_PATH=/host_proc
-    ports:
-      - 5172:8000
     volumes:
       - ./backend:/app
       - ./data:/data

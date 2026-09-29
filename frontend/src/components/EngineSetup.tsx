@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Map as MapIcon, RotateCcw, AlertTriangle, Maximize, Minimize } from 'lucide-react';
-import { AreaChart, Area, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, YAxis } from 'recharts';
+import { Search, AlertTriangle, Maximize, Minimize } from 'lucide-react';
+import { AreaChart, Area, Tooltip, ResponsiveContainer, YAxis } from 'recharts';
 
 const US_STATES = [
     { id: 'alabama', name: 'Alabama' },
@@ -96,20 +96,11 @@ const formatSpeed = (bytesPerSec: number) => {
     return { value: (bytesPerSec / 1024 / 1024).toFixed(1), unit: 'MB/s' };
 };
 
-const MetricBar = ({ value, max, label, color }: { value: number, max?: number, label: string, color: string }) => {
-    const pct = max ? Math.min(100, Math.max(0, (value / max) * 100)) : 100;
-    return (
-        <div style={{ flex: 1, height: '14px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden', position: 'relative', marginLeft: '12px' }}>
-            <div style={{ width: `${max ? pct : 100}%`, height: '100%', background: max ? color : 'rgba(255,255,255,0.02)', transition: 'width 0.3s ease' }}></div>
-            <div style={{ position: 'absolute', top: 0, right: '4px', height: '100%', display: 'flex', alignItems: 'center', fontSize: '9px', fontWeight: 600, color: '#fff', textShadow: '0 0 2px rgba(0,0,0,0.8)' }}>
-                {label}
-            </div>
-        </div>
-    );
-};
 
-export default function EngineSetup() {
-    const [metrics, setMetrics] = useState<{ cpu: number, ram: number } | null>(null);
+
+export default function EngineSetup({ isActive = true }: { isActive?: boolean }) {
+    const role = localStorage.getItem('role') || 'admin';
+    const [metrics, setMetrics] = useState<{ cpu: number, ram: number, disk_read: number, disk_write: number, net_in: number, net_out: number } | null>(null);
     const [history, setHistory] = useState<any[]>(generateMockHistory());
     const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, active_states?: string[] } | null>(null);
     const [selectedStates, setSelectedStates] = useState<string[]>([]);
@@ -124,13 +115,10 @@ export default function EngineSetup() {
     const [carLogs, setCarLogs] = useState<string[]>([]);
     const [footLogs, setFootLogs] = useState<string[]>([]);
     const [activeStates, setActiveStates] = useState<string[]>([]);
-    const [showCarLogs, setShowCarLogs] = useState(false);
-    const [showFootLogs, setShowFootLogs] = useState(false);
     const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
     const [termInput, setTermInput] = useState('');
     const [forceDownload, setForceDownload] = useState(false);
     const [isLogFullScreen, setIsLogFullScreen] = useState(false);
-    const [dockerStats, setDockerStats] = useState<any>({ car: null, foot: null });
     const logsContainerRef = useRef<HTMLDivElement>(null);
     const isScrolledToBottom = useRef(true);
 
@@ -143,7 +131,7 @@ export default function EngineSetup() {
     useEffect(() => {
         const fetchMetrics = async () => {
             try {
-                const res = await fetch(`http://${window.location.hostname}:5172/system/metrics`);
+                const res = await fetch(`/api/system/metrics`);
                 if (res.ok) {
                     const data = await res.json();
                     setMetrics(data);
@@ -165,7 +153,7 @@ export default function EngineSetup() {
 
         const fetchDocker = async () => {
             try {
-                const res = await fetch(`http://${window.location.hostname}:5172/system/docker`);
+                const res = await fetch(`/api/system/docker`);
                 if (res.ok) {
                     const data = await res.json();
                     setDockerStatus(data);
@@ -174,21 +162,13 @@ export default function EngineSetup() {
                     }
                 }
 
-                Promise.all([
-                    fetch(`http://${window.location.hostname}:5172/system/docker/car/stats`).then(r => r.json()).catch(() => ({ error: true })),
-                    fetch(`http://${window.location.hostname}:5172/system/docker/foot/stats`).then(r => r.json()).catch(() => ({ error: true }))
-                ]).then(([carStats, footStats]) => {
-                    setDockerStats({
-                        car: carStats.error ? null : carStats,
-                        foot: footStats.error ? null : footStats
-                    });
-                });
+
             } catch (e) { }
         };
 
         const fetchApiCalls = async () => {
             try {
-                const res = await fetch(`http://${window.location.hostname}:5172/system/api-calls`);
+                const res = await fetch(`/api/system/api-calls`);
                 if (res.ok) {
                     const data = await res.json();
                     setApiCalls(data.calls || []);
@@ -198,21 +178,21 @@ export default function EngineSetup() {
 
         const fetchDeployLogs = async () => {
             try {
-                const res = await fetch(`http://${window.location.hostname}:5172/system/logs`);
+                const res = await fetch(`/api/system/logs`);
                 if (res.ok) {
                     const data = await res.json();
                     setDeployLogs(data.logs || []);
                 }
             } catch (e) { }
             try {
-                const resCar = await fetch(`http://${window.location.hostname}:5172/system/docker/car/logs`);
+                const resCar = await fetch(`/api/system/docker/car/logs`);
                 if (resCar.ok) {
                     const data = await resCar.json();
                     setCarLogs(data.logs || []);
                 }
             } catch (e) { }
             try {
-                const resFoot = await fetch(`http://${window.location.hostname}:5172/system/docker/foot/logs`);
+                const resFoot = await fetch(`/api/system/docker/foot/logs`);
                 if (resFoot.ok) {
                     const data = await resFoot.json();
                     setFootLogs(data.logs || []);
@@ -241,13 +221,13 @@ export default function EngineSetup() {
     const confirmRemoveAllContainers = async () => {
         setShowRemoveConfirm(false);
         try {
-            await fetch(`http://${window.location.hostname}:5172/system/docker/remove-all`, { method: 'POST' });
+            await fetch(`/api/system/docker/remove-all`, { method: 'POST' });
         } catch (e) { }
     };
 
     const handleDockerAction = async (profile: string, action: 'start' | 'stop') => {
         try {
-            await fetch(`http://${window.location.hostname}:5172/system/docker/${profile}/${action}`, { method: 'POST' });
+            await fetch(`/api/system/docker/${profile}/${action}`, { method: 'POST' });
         } catch (e) { }
     };
 
@@ -310,7 +290,7 @@ export default function EngineSetup() {
                         <span style={{ color: '#f59e0b', fontWeight: 600 }}>{routesToday}</span>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px', marginBottom: '4px' }}>
-                        {Object.entries(servicesCount).map(([srv, count]) => (
+                        {Object.entries(servicesCount).map(([srv, count]: [string, any]) => (
                             <div key={srv} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', padding: '1px 6px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '2px' }}>
                                 <span style={{ color: 'var(--text-secondary)' }}>{srv}</span>
                                 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{count}</span>
@@ -340,19 +320,6 @@ export default function EngineSetup() {
         );
     };
 
-    const handleMerge = async () => {
-        if (selectedStates.length === 0) return;
-        setMergeStatus('Starting...');
-        setDeployLogs([]);
-        try {
-            fetch(`http://${window.location.hostname}:5172/system/merge`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ states: selectedStates })
-            });
-            setMergeStatus('Merge initiated. See logs...');
-        } catch (e) { }
-    };
 
     const handleDeploy = async () => {
         setMergeStatus('Starting Fresh Deployment...');
@@ -361,7 +328,7 @@ export default function EngineSetup() {
         setViewMode('deployment');
         setDeployLogs([]);
         try {
-            await fetch(`http://${window.location.hostname}:5172/system/merge`, {
+            await fetch(`/api/system/merge`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: forceDownload })
@@ -379,7 +346,7 @@ export default function EngineSetup() {
                 if (logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
             }, 100);
             try {
-                await fetch(`http://${window.location.hostname}:5172/system/exec`, {
+                await fetch(`/api/system/exec`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ command: cmd })
@@ -424,7 +391,7 @@ export default function EngineSetup() {
                                                 <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: number) => [`${value.toFixed(1)}%`, 'CPU']} />
+                                        {isActive && <Tooltip isAnimationActive={false} contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: any) => [`${(value || 0).toFixed(1)}%`, 'CPU']} />}
                                         <YAxis domain={[0, 100]} hide={true} />
                                         <Area type="monotone" dataKey="cpu" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorCpu)" animationDuration={300} />
                                     </AreaChart>
@@ -454,7 +421,7 @@ export default function EngineSetup() {
                                                 <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: number) => [`${value.toFixed(1)}%`, 'RAM']} />
+                                        {isActive && <Tooltip isAnimationActive={false} contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: any) => [`${(value || 0).toFixed(1)}%`, 'RAM']} />}
                                         <YAxis domain={[0, 100]} hide={true} />
                                         <Area type="monotone" dataKey="ram" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorRam)" animationDuration={300} />
                                     </AreaChart>
@@ -484,7 +451,7 @@ export default function EngineSetup() {
                                                 <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: number) => { const s = formatSpeed(value); return [`${s.value} ${s.unit}`, 'Disk I/O']; }} />
+                                        {isActive && <Tooltip isAnimationActive={false} contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: any) => { const s = formatSpeed(value); return [`${s.value} ${s.unit}`, 'Disk I/O']; }} />}
                                         <YAxis domain={[0, 'auto']} hide={true} />
                                         <Area type="monotoneX" dataKey="diskRead" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorDiskIO)" animationDuration={300} />
                                     </AreaChart>
@@ -514,7 +481,7 @@ export default function EngineSetup() {
                                                 <stop offset="95%" stopColor="#ec4899" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: number) => { const s = formatSpeed(value); return [`${s.value} ${s.unit}`, 'Network']; }} />
+                                        {isActive && <Tooltip isAnimationActive={false} contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: any) => { const s = formatSpeed(value); return [`${s.value} ${s.unit}`, 'Network']; }} />}
                                         <YAxis domain={[0, 'auto']} hide={true} />
                                         <Area type="monotoneX" dataKey="netIn" stroke="#ec4899" strokeWidth={3} fillOpacity={1} fill="url(#colorNet)" animationDuration={300} />
                                     </AreaChart>
@@ -550,7 +517,7 @@ export default function EngineSetup() {
                         </div>
 
                         <div style={{ marginTop: 'auto' }}>
-                            <button onClick={() => { setSelectedStates(activeStates); setShowModal(true); }} style={{ width: '100%', background: '#3b82f6', color: 'white', border: 'none', padding: '12px', borderRadius: 0, fontSize: '13px', fontWeight: 600, cursor: 'pointer', transition: 'background 0.2s', marginBottom: '16px' }} onMouseOver={e => e.currentTarget.style.background = '#2563eb'} onMouseOut={e => e.currentTarget.style.background = '#3b82f6'}>
+                            <button disabled={role === "guest"} onClick={() => { setSelectedStates(activeStates); setShowModal(true); }} style={{ width: '100%', background: '#3b82f6', color: 'white', border: 'none', padding: '12px', borderRadius: 0, fontSize: '13px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'background 0.2s', marginBottom: '16px' }} onMouseOver={e => e.currentTarget.style.background = '#2563eb'} onMouseOut={e => e.currentTarget.style.background = '#3b82f6'}>
                                 Configure & Start Fresh Installation
                             </button>
 
@@ -565,7 +532,7 @@ export default function EngineSetup() {
                     <div style={{ ...cardStyle }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                             <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Docker Container Status</h3>
-                            <button onClick={handleRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '6px 12px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', borderRadius: 0 }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)' }}>
+                            <button disabled={role === "guest"} onClick={handleRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '6px 12px', fontSize: '11px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'all 0.2s', borderRadius: 0 }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)' }}>
                                 Remove All Instances
                             </button>
 
@@ -582,7 +549,7 @@ export default function EngineSetup() {
                                         </div>
                                     </div>
                                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                        <button disabled={dockerStatus?.car === 'Not Found'} onClick={() => handleDockerAction('car', dockerStatus?.car === 'running' ? 'stop' : 'start')} style={{ background: 'var(--panel-inner-bg)', color: dockerStatus?.car === 'Not Found' ? '#6b7280' : '#fff', border: '1px solid var(--panel-border)', padding: '4px 12px', borderRadius: 0, fontSize: '11px', cursor: dockerStatus?.car === 'Not Found' ? 'not-allowed' : 'pointer', transition: 'background 0.2s' }} onMouseOver={e => { if (dockerStatus?.car !== 'Not Found') e.currentTarget.style.background = 'var(--panel-border)' }} onMouseOut={e => { if (dockerStatus?.car !== 'Not Found') e.currentTarget.style.background = 'var(--panel-inner-bg)' }}>
+                                        <button disabled={role === "guest" || dockerStatus?.car === 'Not Found'} onClick={() => handleDockerAction('car', dockerStatus?.car === 'running' ? 'stop' : 'start')} style={{ background: 'var(--panel-inner-bg)', color: dockerStatus?.car === 'Not Found' ? '#6b7280' : '#fff', border: '1px solid var(--panel-border)', padding: '4px 12px', borderRadius: 0, fontSize: '11px', cursor: role === "guest" || dockerStatus?.car === 'Not Found' ? 'not-allowed' : 'pointer', opacity: role === "guest" ? 0.5 : 1, transition: 'background 0.2s' }} onMouseOver={e => { if (dockerStatus?.car !== 'Not Found') e.currentTarget.style.background = 'var(--panel-border)' }} onMouseOut={e => { if (dockerStatus?.car !== 'Not Found') e.currentTarget.style.background = 'var(--panel-inner-bg)' }}>
                                             {dockerStatus?.car === 'running' ? 'Stop' : 'Start'}
                                         </button>
                                         <div style={{ background: dockerStatus?.car === 'running' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', color: dockerStatus?.car === 'running' ? '#10b981' : '#ef4444', padding: '4px 12px', borderRadius: 0, fontSize: '11px', fontWeight: 600 }}>
@@ -610,7 +577,7 @@ export default function EngineSetup() {
                                         </div>
                                     </div>
                                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                        <button disabled={dockerStatus?.foot === 'Not Found'} onClick={() => handleDockerAction('foot', dockerStatus?.foot === 'running' ? 'stop' : 'start')} style={{ background: 'var(--panel-inner-bg)', color: dockerStatus?.foot === 'Not Found' ? '#6b7280' : '#fff', border: '1px solid var(--panel-border)', padding: '4px 12px', borderRadius: 0, fontSize: '11px', cursor: dockerStatus?.foot === 'Not Found' ? 'not-allowed' : 'pointer', transition: 'background 0.2s' }} onMouseOver={e => { if (dockerStatus?.foot !== 'Not Found') e.currentTarget.style.background = 'var(--panel-border)' }} onMouseOut={e => { if (dockerStatus?.foot !== 'Not Found') e.currentTarget.style.background = 'var(--panel-inner-bg)' }}>
+                                        <button disabled={role === "guest" || dockerStatus?.foot === 'Not Found'} onClick={() => handleDockerAction('foot', dockerStatus?.foot === 'running' ? 'stop' : 'start')} style={{ background: 'var(--panel-inner-bg)', color: dockerStatus?.foot === 'Not Found' ? '#6b7280' : '#fff', border: '1px solid var(--panel-border)', padding: '4px 12px', borderRadius: 0, fontSize: '11px', cursor: role === "guest" || dockerStatus?.foot === 'Not Found' ? 'not-allowed' : 'pointer', opacity: role === "guest" ? 0.5 : 1, transition: 'background 0.2s' }} onMouseOver={e => { if (dockerStatus?.foot !== 'Not Found') e.currentTarget.style.background = 'var(--panel-border)' }} onMouseOut={e => { if (dockerStatus?.foot !== 'Not Found') e.currentTarget.style.background = 'var(--panel-inner-bg)' }}>
                                             {dockerStatus?.foot === 'running' ? 'Stop' : 'Start'}
                                         </button>
                                         <div style={{ background: dockerStatus?.foot === 'running' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', color: dockerStatus?.foot === 'running' ? '#10b981' : '#ef4444', padding: '4px 12px', borderRadius: 0, fontSize: '11px', fontWeight: 600 }}>
@@ -704,7 +671,7 @@ export default function EngineSetup() {
                             </div>
                             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                                 {viewMode === 'deployment' && (
-                                    <button onClick={handleRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', padding: '2px 8px', fontSize: '10px', cursor: 'pointer' }} onMouseOver={e => e.currentTarget.style.background = 'rgba(239,68,68,0.2)'} onMouseOut={e => e.currentTarget.style.background = 'rgba(239,68,68,0.1)'}>
+                                    <button disabled={role === "guest"} onClick={handleRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', padding: '2px 8px', fontSize: '10px', cursor: 'pointer' }} onMouseOver={e => e.currentTarget.style.background = 'rgba(239,68,68,0.2)'} onMouseOut={e => e.currentTarget.style.background = 'rgba(239,68,68,0.1)'}>
                                         Stop & Revert Everything
                                     </button>
                                 )}
@@ -760,15 +727,16 @@ export default function EngineSetup() {
                             )}
                         </div>
                         {viewMode === 'deployment' && (
-                            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--panel-bg)', padding: '8px 20px', borderTop: '1px solid var(--panel-border)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--panel-bg)', padding: '8px 20px', borderTop: '1px solid var(--panel-border)', opacity: role === 'guest' ? 0.5 : 1 }}>
                                 <span style={{ color: '#10b981', marginRight: '8px', fontSize: '11px', fontFamily: 'monospace' }}>$</span>
                                 <input
                                     type="text"
                                     value={termInput}
                                     onChange={(e) => setTermInput(e.target.value)}
                                     onKeyDown={handleTerminalCommand}
-                                    placeholder="Type a docker command (e.g. docker ps) and press Enter..."
-                                    style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontFamily: 'monospace', fontSize: '11px' }}
+                                    placeholder={role === 'guest' ? "Terminal disabled for guest users" : "Type a docker command (e.g. docker ps) and press Enter..."}
+                                    disabled={role === 'guest'}
+                                    style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontFamily: 'monospace', fontSize: '11px', cursor: role === 'guest' ? 'not-allowed' : 'text' }}
                                 />
                             </div>
                         )}
@@ -794,7 +762,7 @@ export default function EngineSetup() {
                                     {selectedStates.length > 0 && (
                                         <div style={{ marginBottom: '12px', fontSize: '12px', color: '#3b82f6', background: 'rgba(59,130,246,0.1)', padding: '8px 12px', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', justifyContent: 'space-between' }}>
                                             <span><strong>Selected ({selectedStates.length}):</strong> {selectedStates.map(s => US_STATES.find(us => us.id === s)?.name).join(', ')}</span>
-                                            <button onClick={() => setSelectedStates([])} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600 }}>Clear All</button>
+                                            <button disabled={role === "guest"} onClick={() => setSelectedStates([])} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600 }}>Clear All</button>
                                         </div>
                                     )}
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', maxHeight: '350px', overflowY: 'auto' }}>
@@ -840,7 +808,7 @@ export default function EngineSetup() {
                             </div>
 
                             <div style={{ padding: '20px', borderTop: '1px solid var(--panel-border)', background: 'rgba(239,68,68,0.05)' }}>
-                                <button onClick={handleDeploy} style={{ width: '100%', background: 'rgba(239,68,68,0.2)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s' }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.3)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)' }}>
+                                <button disabled={role === "guest"} onClick={handleDeploy} style={{ width: '100%', background: 'rgba(239,68,68,0.2)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'all 0.2s' }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.3)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)' }}>
                                     <AlertTriangle size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px', marginTop: '-2px' }} />
                                     Destroy Existing Containers & Deploy Fresh Setup
                                 </button>
@@ -867,7 +835,7 @@ export default function EngineSetup() {
                                 <button onClick={() => setShowRemoveConfirm(false)} style={{ background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--panel-border)', padding: '8px 16px', fontSize: '13px', cursor: 'pointer', transition: 'background 0.2s' }} onMouseOver={e => e.currentTarget.style.background = 'var(--panel-inner-bg)'} onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
                                     Cancel
                                 </button>
-                                <button onClick={confirmRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '8px 16px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s' }} onMouseOver={e => e.currentTarget.style.background = 'rgba(239,68,68,0.2)'} onMouseOut={e => e.currentTarget.style.background = 'rgba(239,68,68,0.1)'}>
+                                <button disabled={role === "guest"} onClick={confirmRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '8px 16px', fontSize: '13px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'all 0.2s' }} onMouseOver={e => e.currentTarget.style.background = 'rgba(239,68,68,0.2)'} onMouseOut={e => e.currentTarget.style.background = 'rgba(239,68,68,0.1)'}>
                                     Remove Instances
                                 </button>
                             </div>
