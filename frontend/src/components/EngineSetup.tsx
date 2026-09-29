@@ -275,8 +275,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         const minResp = hasTraffic && latencies.length > 0 ? Math.round(Math.min(...latencies)) + ' ms' : '0 ms';
         const maxResp = hasTraffic && latencies.length > 0 ? Math.round(Math.max(...latencies)) + ' ms' : '0 ms';
 
-        const failed = hasTraffic ? (calls.length % 5) : 0;
-        const peak = hasTraffic ? Math.max(1, Math.floor(calls.length / 2)) : 0;
+        const failed = 0; // The backend /api-calls endpoint currently only parses successful [info] logs
+        const peak = hasTraffic ? Math.max(1, Math.ceil(calls.length / (24 * 60))) : 0; // Actually estimate per minute based on 24h
         const last = hasTraffic ? (calls[0].timestamp.split(' ')[1] || calls[0].timestamp) : 'Never';
 
         return (

@@ -1,4 +1,4 @@
-# RouteOps v2.0.0 🚗 🗺️
+# RouteOps v2.1.0 🚗 🗺️
 
 RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)**. It provides a sleek, dark-mode web dashboard to deploy routing engines for specific US states on-the-fly, calculate routes (Car & Foot), and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
 

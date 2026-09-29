@@ -483,11 +483,13 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
         <MapFitter bounds={routeBounds} />
         
         {/* Draw active state boundaries */}
-        <GeoJSON 
-            key={`geojson-${activeStates.join('-')}`} 
-            data={(usStatesGeoJson as any).features.filter((f: any) => activeStates.includes(f.properties.name.toLowerCase().replace(/ /g, '-')))}
-            style={{ color: '#3b82f6', fillOpacity: 0.05, weight: 2, dashArray: '5, 10' }}
-        />
+        {selectedState && (
+            <GeoJSON 
+                key={`geojson-${selectedState}`} 
+                data={(usStatesGeoJson as any).features.filter((f: any) => f.properties.name.toLowerCase().replace(/ /g, '-') === selectedState)}
+                style={{ color: '#3b82f6', fillOpacity: 0.05, weight: 2, dashArray: '5, 10' }}
+            />
+        )}
         
         {startPoint && <Marker position={startPoint} icon={startIcon}><Popup>Start</Popup></Marker>}
         {endPoint && <Marker position={endPoint} icon={endIcon}><Popup>End</Popup></Marker>}
