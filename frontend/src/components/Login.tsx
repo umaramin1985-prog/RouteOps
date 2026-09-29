@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Map, Lock, User, ArrowRight, Key } from 'lucide-react';
+import packageJson from '../../package.json';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -185,6 +186,19 @@ export default function Login() {
           </form>
         )}
       </div>
+
+      <footer style={{
+        position: 'absolute',
+        bottom: 0,
+        width: '100%',
+        textAlign: 'center',
+        padding: '12px',
+        color: 'rgba(255,255,255,0.5)',
+        fontSize: '11px',
+        background: 'rgba(0,0,0,0.3)'
+      }}>
+        <span>&copy; {new Date().getFullYear()} IT Curves | RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
+      </footer>
     </div>
   );
 }
