@@ -516,7 +516,7 @@ def log_msg(*args, **kwargs):
     msg = " ".join(str(a) for a in args)
     print(msg, flush=True)
     try:
-        with open(os.path.abspath('../deploy.log'), 'a') as lf:
+        with open(os.path.join(get_data_dir(), 'deploy.log'), 'a') as lf:
             lf.write(msg + '\n')
     except:
         pass
@@ -524,7 +524,7 @@ def log_msg(*args, **kwargs):
 @app.get('/system/logs')
 def get_system_logs():
     try:
-        with open(os.path.abspath('../deploy.log'), 'r') as lf:
+        with open(os.path.join(get_data_dir(), 'deploy.log'), 'r') as lf:
             lines = lf.readlines()
             return {'logs': [l.strip() for l in lines[-50:]]}
     except:
