@@ -623,6 +623,179 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
             
     background_tasks.add_task(process_merge, req.states, req.force_download)
     return {'status': 'Started'}
+
+@app.post('/system/update')
+def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
+    try:
+        with open(os.path.abspath('../deploy.log'), 'w') as f:
+            pass
+    except Exception:
+        pass
+        
+    try:
+        import json, os
+        data_dir = get_data_dir()
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+        with open(os.path.join(data_dir, 'active_states.json'), 'w') as f:
+            json.dump(req.states, f)
+    except Exception as e:
+        pass
+
+    def process_update(states: list[str], force_download: bool):
+        import urllib.request
+        import subprocess
+        import shutil
+        import docker
+        import time
+        import csv
+        
+        log_msg(f'Starting zero-downtime update for {states}')
+        data_dir = get_data_dir()
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+        files = []
+        for state in states:
+            url = f'http://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
+            file_path = os.path.join(data_dir, f'{state}.osm.pbf')
+            
+            if not force_download and os.path.exists(file_path):
+                log_msg(f'Using cached map data for {state}...')
+                files.append(f'/data/{state}.osm.pbf')
+            else:
+                log_msg(f'Downloading {url} to {file_path}')
+                try:
+                    last_pct = [0]
+                    start_time = [time.time()]
+                    def reporthook(block_num, block_size, total_size):
+                        if total_size > 0:
+                            pct = int((block_num * block_size * 100) / total_size)
+                            if pct > 100: pct = 100
+                            if pct > last_pct[0]:
+                                last_pct[0] = pct
+                                elapsed = time.time() - start_time[0]
+                                downloaded = block_num * block_size
+                                speed_mbps = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                                speed_str = f"{speed_mbps:.1f} MB/s"
+                                try:
+                                    log_path = os.path.abspath('../deploy.log')
+                                    with open(log_path, 'r') as lf:
+                                        lines = lf.readlines()
+                                    if lines:
+                                        lines[-1] = f'Downloading {url} to {file_path} - {pct}% ({speed_str})\n'
+                                    with open(log_path, 'w') as lf:
+                                        lf.writelines(lines)
+                                except:
+                                    pass
+
+                    urllib.request.urlretrieve(url, file_path, reporthook=reporthook)
+                    files.append(f'/data/{state}.osm.pbf')
+                except Exception as e:
+                    log_msg(f'Failed to download {state}: {e}')
+                
+        if len(files) > 1:
+            log_msg('Merging files using osmium-tool...')
+            merged_file = '/data/merged.osm.pbf'
+            try:
+                client = docker.from_env()
+                command = ['osmium', 'merge'] + files + ['-o', merged_file, '-O']
+                stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
+                log_msg('Merge successful!')
+            except Exception as e:
+                log_msg(f'Merge failed: {e}')
+        elif len(files) == 1:
+            shutil.copy(os.path.join(data_dir, f'{states[0]}.osm.pbf'), os.path.join(data_dir, 'merged.osm.pbf'))
+            log_msg('Only 1 state, copied to merged.osm.pbf')
+            
+        log_msg('--- MERGE COMPLETE, STARTING BUILD ---')
+        
+        try:
+            client = docker.from_env()
+            merged_path = os.path.join(data_dir, 'merged.osm.pbf')
+            if os.path.exists(merged_path):
+                import psutil
+                pbf_size = os.path.getsize(merged_path)
+                available_ram = psutil.virtual_memory().available
+                required_ram = pbf_size * 5  # Conservative estimate for zero-downtime build + hot reload
+                
+                if available_ram < required_ram:
+                    log_msg(f"WARNING: Insufficient RAM for zero-downtime update.")
+                    log_msg(f"Available: {available_ram / (1024**3):.1f} GB. Required (Estimated): {required_ram / (1024**3):.1f} GB.")
+                    log_msg("Falling back to standard deployment (will cause brief downtime)...")
+                    process_deploy(req.car_port, req.foot_port)
+                    return
+
+                shutil.copy(merged_path, os.path.join(data_dir, 'car.osm.pbf'))
+                shutil.copy(merged_path, os.path.join(data_dir, 'foot.osm.pbf'))
+                
+                try:
+                    db_session = SessionLocal()
+                    overrides = db_session.query(RoadOverride).all()
+                    csv_path = os.path.join(data_dir, "speeds.csv")
+                    with open(csv_path, 'w', newline='') as f:
+                        writer = csv.writer(f)
+                        for ov in overrides:
+                            speed = 1 if ov.is_closed else max(1, int(round(ov.speed_kmh)))
+                            if ',' in ov.from_node:
+                                nodes = ov.from_node.split(',')
+                                for i in range(len(nodes) - 1):
+                                    writer.writerow([nodes[i], nodes[i+1], speed])
+                                    if ov.is_bidirectional:
+                                        writer.writerow([nodes[i+1], nodes[i], speed])
+                            else:
+                                writer.writerow([ov.from_node, ov.to_node, speed])
+                                if ov.is_bidirectional:
+                                    writer.writerow([ov.to_node, ov.from_node, speed])
+                    db_session.close()
+                    log_msg(f"Exported {len(overrides)} road overrides to speeds.csv")
+                except Exception as e:
+                    log_msg(f"Failed to export speeds.csv: {e}")
+
+                has_speeds = os.path.exists(os.path.join(data_dir, "speeds.csv")) and os.path.getsize(os.path.join(data_dir, "speeds.csv")) > 0
+                
+                cust_cmd_car = ['osrm-customize', '/data/car.osrm']
+                if has_speeds:
+                    cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
+
+                log_msg('Running OSRM Extract for CAR...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
+                log_msg('Running OSRM Partition for CAR...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], **get_docker_mounts())
+                log_msg('Running OSRM Customize for CAR...')
+                stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, **get_docker_mounts())
+                
+                cust_cmd_foot = ['osrm-customize', '/data/foot.osrm']
+                if has_speeds:
+                    cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
+
+                log_msg('Running OSRM Extract for FOOT...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
+                log_msg('Running OSRM Partition for FOOT...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], **get_docker_mounts())
+                log_msg('Running OSRM Customize for FOOT...')
+                stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
+            else:
+                log_msg('Warning: merged.osm.pbf not found. Skipping graph build.')
+                
+            log_msg('Hot-reloading CAR container with shared memory...')
+            for container in client.containers.list(all=True):
+                if 'osrm-car' in container.name:
+                    container.exec_run('osrm-datastore /data/car.osrm')
+                    log_msg('Hot-reloaded CAR profile successfully.')
+            
+            log_msg('Hot-reloading FOOT container with shared memory...')
+            for container in client.containers.list(all=True):
+                if 'osrm-foot' in container.name:
+                    container.exec_run('osrm-datastore /data/foot.osrm')
+                    log_msg('Hot-reloaded FOOT profile successfully.')
+                    
+            log_msg('Zero-Downtime Deployment complete!')
+        except Exception as e:
+            log_msg(f'Build and hot-reload failed: {e}')
+            
+    background_tasks.add_task(process_update, req.states, req.force_download)
+    return {'status': 'Started'}
+
 @app.get('/system/api-calls')
 def get_api_calls():
     calls = []

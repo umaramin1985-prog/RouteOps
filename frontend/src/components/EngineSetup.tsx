@@ -337,6 +337,22 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         } catch (e) { }
     };
 
+    const handleUpdate = async () => {
+        setMergeStatus('Starting Zero-Downtime Update...');
+        setShowModal(false);
+        setActiveStates(selectedStates);
+        setViewMode('deployment');
+        setDeployLogs([]);
+        try {
+            await fetch(`/api/system/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: forceDownload })
+            });
+            setMergeStatus('Zero-Downtime Update initiated. See logs for progress.');
+        } catch (e) { }
+    };
+
     const handleTerminalCommand = async (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter' && termInput.trim()) {
             const cmd = termInput.trim();
@@ -807,7 +823,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 </div>
                             </div>
 
-                            <div style={{ padding: '20px', borderTop: '1px solid var(--panel-border)', background: 'rgba(239,68,68,0.05)' }}>
+                            <div style={{ padding: '20px', borderTop: '1px solid var(--panel-border)', background: 'rgba(239,68,68,0.05)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                <button disabled={role === "guest"} onClick={handleUpdate} style={{ width: '100%', background: 'rgba(16,185,129,0.2)', color: '#10b981', border: '1px solid rgba(16,185,129,0.3)', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'all 0.2s' }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(16,185,129,0.3)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(16,185,129,0.2)' }}>
+                                    <AlertTriangle size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px', marginTop: '-2px' }} />
+                                    Update States (Zero Downtime)
+                                </button>
                                 <button disabled={role === "guest"} onClick={handleDeploy} style={{ width: '100%', background: 'rgba(239,68,68,0.2)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'all 0.2s' }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.3)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)' }}>
                                     <AlertTriangle size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px', marginTop: '-2px' }} />
                                     Destroy Existing Containers & Deploy Fresh Setup
