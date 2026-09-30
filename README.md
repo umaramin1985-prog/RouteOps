@@ -1,10 +1,11 @@
-# RouteOps v2.1.0 🚗 🗺️
+# RouteOps v2.2.0 🚗 🗺️
 
 RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)**. It provides a sleek, dark-mode web dashboard to deploy routing engines for specific US states on-the-fly, calculate routes (Car & Foot), and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
 
 ## 🌟 Features
 
 *   **One-Click Deployment:** Automatically download map data (OSM `.pbf` from Geofabrik) for any US state and spin up dedicated Docker containers.
+*   **Zero-Downtime Map Updates:** Add or remove states on-the-fly using the "Update States (Zero Downtime)" feature. The backend intelligently compiles new maps and swaps them into shared memory without dropping active API requests. Includes an automatic RAM safeguard that falls back to standard deployment if memory is low.
 *   **Zero-Downtime Hot-Swapping:** Close roads directly from the map UI. The backend uses `osrm-customize` and `osrm-datastore` via Shared Memory to instantly patch the routing engine in real-time without taking the server offline.
 *   **Active Route Edits Management:** Monitor and manage thousands of hot-swapped road closures and speed adjustments in a dedicated, paginated grid with real-time search filtering.
 *   **Multi-Profile Routing:** Seamlessly switch between Car (driving) and Foot (walking) routing profiles.
@@ -94,7 +95,9 @@ By default, the management portal is locked behind a login screen to prevent una
 
 ## 🕹️ Usage Guide
 
-1.  **Deploy an Engine:** Go to the **Engines Setup** tab on the top navigation bar. Select a state from the dropdown (e.g., Mississippi) and click deploy. The backend will download the map data, compile it, and start the Docker containers.
+1.  **Deploy / Update Engines:** Go to the **Engines Setup** tab on the top navigation bar. Select states from the list. You have two options:
+    - **Update States (Zero Downtime):** Compiles the new map data and swaps it into shared memory instantly without interrupting active traffic. Includes an automatic safeguard that will fall back to a fresh setup if your server lacks the RAM required to hold both maps simultaneously.
+    - **Destroy Existing Containers & Deploy Fresh Setup:** Completely stops routing services, wipes old data from RAM, and performs a clean installation from scratch (causes brief downtime).
 2.  **Calculate a Route:** Go to the **Live Map** tab. Click anywhere on the map to set a Start point, and click again to set a Destination. The route will be drawn instantly. You can click the **JSON** button in the route summary to view and copy the raw API request and response.
 3.  **Close a Road:** Once a route is drawn, you can click directly on the blue route line to adjust its speed limit or completely close the road. The change will instantly propagate to the routing engine.
 4.  **Manage Active Edits:** Navigate to the **Active Edits** tab to view a complete, paginated grid of all active road closures and speed adjustments. You can search by node ID or reason, and quickly remove any edits to instantly restore the original map state.
