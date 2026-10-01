@@ -100,16 +100,20 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
   }, [endPoint]);
 
   useEffect(() => {
-    if (activeStates && activeStates.length > 0 && !selectedState) {
-        const first = activeStates[0];
-        setSelectedState(first);
-        const boundsData = (stateBounds as any)[first];
-        if (boundsData) {
-            setRouteBounds(L.latLngBounds([
-                [boundsData[0][0], boundsData[0][1]], 
-                [boundsData[1][0], boundsData[1][1]]
-            ]));
+    if (activeStates && activeStates.length > 0) {
+        if (!selectedState || !activeStates.includes(selectedState)) {
+            const first = activeStates[0];
+            setSelectedState(first);
+            const boundsData = (stateBounds as any)[first];
+            if (boundsData) {
+                setRouteBounds(L.latLngBounds([
+                    [boundsData[0][0], boundsData[0][1]], 
+                    [boundsData[1][0], boundsData[1][1]]
+                ]));
+            }
         }
+    } else {
+        setSelectedState('');
     }
   }, [activeStates, selectedState]);
 

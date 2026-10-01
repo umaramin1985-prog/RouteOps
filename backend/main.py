@@ -85,6 +85,7 @@ def on_startup():
         db.add(admin_user)
         db.commit()
     db.close()
+    log_msg("[SYSTEM] Listening for deployment events...")
 
 @app.post("/auth/login")
 def login(req: AuthRequest, db: Session = Depends(get_db)):
@@ -526,7 +527,7 @@ def get_system_logs():
     try:
         with open(os.path.join(get_data_dir(), 'deploy.log'), 'r') as lf:
             lines = lf.readlines()
-            return {'logs': [l.strip() for l in lines[-50:]]}
+            return {'logs': [l.strip() for l in lines]}
     except:
         return {'logs': ['[SYSTEM] Listening for deployment events...']}
 
@@ -539,7 +540,7 @@ class MergeRequest(BaseModel):
 @app.post('/system/merge')
 def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
     try:
-        with open(os.path.abspath('../deploy.log'), 'w') as f:
+        with open(os.path.join(get_data_dir(), 'deploy.log'), 'w') as f:
             pass
     except Exception:
         pass
@@ -564,7 +565,7 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
             os.makedirs(data_dir)
         files = []
         for state in states:
-            url = f'http://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
+            url = f'https://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
             file_path = os.path.join(data_dir, f'{state}.osm.pbf')
             
             if not force_download and os.path.exists(file_path):
@@ -588,7 +589,7 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                                 speed_str = f"{speed_mbps:.1f} MB/s"
                                 # Update last line of log
                                 try:
-                                    log_path = os.path.abspath('../deploy.log')
+                                    log_path = os.path.join(get_data_dir(), 'deploy.log')
                                     with open(log_path, 'r') as lf:
                                         lines = lf.readlines()
                                     if lines:
@@ -603,6 +604,15 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                 except Exception as e:
                     log_msg(f'Failed to download {state}: {e}')
                 
+        if len(files) == 0:
+            log_msg('Error: No states were successfully downloaded. Geofabrik might be unavailable.')
+            log_msg('Deployment failed')
+            try:
+                os.remove(os.path.join(data_dir, 'active_states.json'))
+            except Exception:
+                pass
+            return
+
         if len(files) > 1:
             log_msg('Merging files using osmium-tool...')
             merged_file = '/data/merged.osm.pbf'
@@ -614,20 +624,34 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                 log_msg('Merge successful!')
             except Exception as e:
                 log_msg(f'Merge failed: {e}')
+                log_msg('Deployment failed')
+                try: os.remove(os.path.join(data_dir, 'active_states.json'))
+                except Exception: pass
+                return
         elif len(files) == 1:
-            shutil.copy(os.path.join(data_dir, f'{states[0]}.osm.pbf'), os.path.join(data_dir, 'merged.osm.pbf'))
+            shutil.copy(os.path.join(data_dir, os.path.basename(files[0])), os.path.join(data_dir, 'merged.osm.pbf'))
             log_msg('Only 1 state, copied to merged.osm.pbf')
             
         log_msg('--- MERGE COMPLETE, STARTING DEPLOYMENT ---')
         process_deploy(req.car_port, req.foot_port)
             
-    background_tasks.add_task(process_merge, req.states, req.force_download)
+    def safe_process_merge(*args):
+        try:
+            process_merge(*args)
+        except Exception as e:
+            log_msg(f"Fatal deployment error: {e}")
+            log_msg("Deployment failed")
+            import os
+            try: os.remove(os.path.join(get_data_dir(), 'active_states.json'))
+            except: pass
+            
+    background_tasks.add_task(safe_process_merge, req.states, req.force_download)
     return {'status': 'Started'}
 
 @app.post('/system/update')
 def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
     try:
-        with open(os.path.abspath('../deploy.log'), 'w') as f:
+        with open(os.path.join(get_data_dir(), 'deploy.log'), 'w') as f:
             pass
     except Exception:
         pass
@@ -656,7 +680,7 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
             os.makedirs(data_dir)
         files = []
         for state in states:
-            url = f'http://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
+            url = f'https://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
             file_path = os.path.join(data_dir, f'{state}.osm.pbf')
             
             if not force_download and os.path.exists(file_path):
@@ -678,7 +702,7 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
                                 speed_mbps = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
                                 speed_str = f"{speed_mbps:.1f} MB/s"
                                 try:
-                                    log_path = os.path.abspath('../deploy.log')
+                                    log_path = os.path.join(get_data_dir(), 'deploy.log')
                                     with open(log_path, 'r') as lf:
                                         lines = lf.readlines()
                                     if lines:
@@ -693,6 +717,15 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
                 except Exception as e:
                     log_msg(f'Failed to download {state}: {e}')
                 
+        if len(files) == 0:
+            log_msg('Error: No states were successfully downloaded. Geofabrik might be unavailable.')
+            log_msg('Deployment failed')
+            try:
+                os.remove(os.path.join(data_dir, 'active_states.json'))
+            except Exception:
+                pass
+            return
+
         if len(files) > 1:
             log_msg('Merging files using osmium-tool...')
             merged_file = '/data/merged.osm.pbf'
@@ -703,8 +736,12 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
                 log_msg('Merge successful!')
             except Exception as e:
                 log_msg(f'Merge failed: {e}')
+                log_msg('Deployment failed')
+                try: os.remove(os.path.join(data_dir, 'active_states.json'))
+                except Exception: pass
+                return
         elif len(files) == 1:
-            shutil.copy(os.path.join(data_dir, f'{states[0]}.osm.pbf'), os.path.join(data_dir, 'merged.osm.pbf'))
+            shutil.copy(os.path.join(data_dir, os.path.basename(files[0])), os.path.join(data_dir, 'merged.osm.pbf'))
             log_msg('Only 1 state, copied to merged.osm.pbf')
             
         log_msg('--- MERGE COMPLETE, STARTING BUILD ---')
@@ -793,7 +830,17 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             log_msg(f'Build and hot-reload failed: {e}')
             
-    background_tasks.add_task(process_update, req.states, req.force_download)
+    def safe_process_update(*args):
+        try:
+            process_update(*args)
+        except Exception as e:
+            log_msg(f"Fatal deployment error: {e}")
+            log_msg("Deployment failed")
+            import os
+            try: os.remove(os.path.join(get_data_dir(), 'active_states.json'))
+            except: pass
+            
+    background_tasks.add_task(safe_process_update, req.states, req.force_download)
     return {'status': 'Started'}
 
 @app.get('/system/api-calls')

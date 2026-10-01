@@ -117,10 +117,14 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const [activeStates, setActiveStates] = useState<string[]>([]);
     const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
     const [termInput, setTermInput] = useState('');
-    const [forceDownload, setForceDownload] = useState(false);
     const [isLogFullScreen, setIsLogFullScreen] = useState(false);
     const logsContainerRef = useRef<HTMLDivElement>(null);
     const isScrolledToBottom = useRef(true);
+
+    const isDeploying = deployLogs.length > 0 && 
+                       !deployLogs[deployLogs.length - 1].includes('Deployment complete!') &&
+                       !deployLogs[deployLogs.length - 1].includes('Deployment failed') &&
+                       !deployLogs[deployLogs.length - 1].includes('Listening for deployment events...');
 
     useEffect(() => {
         if (logsContainerRef.current && isScrolledToBottom.current) {
@@ -331,7 +335,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
             await fetch(`/api/system/merge`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: forceDownload })
+                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: false })
             });
             setMergeStatus('Deployment initiated. See logs for progress.');
         } catch (e) { }
@@ -347,7 +351,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
             await fetch(`/api/system/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: forceDownload })
+                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, force_download: false })
             });
             setMergeStatus('Zero-Downtime Update initiated. See logs for progress.');
         } catch (e) { }
@@ -533,8 +537,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                         </div>
 
                         <div style={{ marginTop: 'auto' }}>
-                            <button disabled={role === "guest"} onClick={() => { setSelectedStates(activeStates); setShowModal(true); }} style={{ width: '100%', background: '#3b82f6', color: 'white', border: 'none', padding: '12px', borderRadius: 0, fontSize: '13px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'background 0.2s', marginBottom: '16px' }} onMouseOver={e => e.currentTarget.style.background = '#2563eb'} onMouseOut={e => e.currentTarget.style.background = '#3b82f6'}>
-                                Configure & Start Fresh Installation
+                            <button disabled={role === "guest" || isDeploying} onClick={() => { setSelectedStates(activeStates); setShowModal(true); }} style={{ width: '100%', background: role === "guest" || isDeploying ? '#94a3b8' : '#3b82f6', color: 'white', border: 'none', padding: '12px', borderRadius: 0, fontSize: '13px', fontWeight: 600, cursor: role === "guest" || isDeploying ? "not-allowed" : "pointer", opacity: role === "guest" || isDeploying ? 0.5 : 1, transition: 'background 0.2s', marginBottom: '16px' }} onMouseOver={e => { if(!isDeploying && role !== "guest") e.currentTarget.style.background = '#2563eb' }} onMouseOut={e => { if(!isDeploying && role !== "guest") e.currentTarget.style.background = '#3b82f6' }}>
+                                {isDeploying ? 'Deployment in Progress...' : 'Configure & Start Fresh Installation'}
                             </button>
 
 
@@ -766,8 +770,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '18px' }}>✕</button>
                             </div>
 
-                            <div style={{ padding: '20px', overflowY: 'auto', flex: 1 }}>
-                                <div style={{ marginBottom: '24px' }}>
+                            <div style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                         <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0 }}>1. Select States</h3>
                                         <div style={{ background: 'var(--panel-inner-bg)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--panel-border)', width: '250px' }}>
@@ -781,7 +785,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                             <button disabled={role === "guest"} onClick={() => setSelectedStates([])} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600 }}>Clear All</button>
                                         </div>
                                     )}
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', maxHeight: '350px', overflowY: 'auto' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: '4px', alignContent: 'start' }}>
                                         {US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(state => {
                                             const isSelected = selectedStates.includes(state.id);
                                             return (
@@ -801,7 +805,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                     </div>
                                 </div>
 
-                                <div style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '24px' }}>
+                                <div style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '24px', marginTop: '24px', flexShrink: 0 }}>
                                     <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0, marginBottom: '16px' }}>2. Network Ports</h3>
                                     <div style={{ display: 'flex', gap: '16px' }}>
                                         <div style={{ flex: 1 }}>
@@ -815,12 +819,6 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                     </div>
                                 </div>
 
-                                <div style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '16px', marginTop: '24px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                        <input type="checkbox" checked={forceDownload} onChange={(e) => setForceDownload(e.target.checked)} />
-                                        Force re-download latest map data from Geofabrik (clears cache)
-                                    </label>
-                                </div>
                             </div>
 
                             <div style={{ padding: '20px', borderTop: '1px solid var(--panel-border)', background: 'rgba(239,68,68,0.05)', display: 'flex', flexDirection: 'column', gap: '12px' }}>

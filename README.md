@@ -1,6 +1,11 @@
-# RouteOps v2.2.0 🚗 🗺️
+# RouteOps v2.3.0 🚗 🗺️
 
 RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)**. It provides a sleek, dark-mode web dashboard to deploy routing engines for specific US states on-the-fly, calculate routes (Car & Foot), and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
+
+## 🚀 What's New in v2.3.0
+*   **Deployment Safety & Stability:** Background deployment tasks now feature global error boundaries. If a download from Geofabrik fails or the server runs out of memory during an `osmium-tool` map merge, the deployment gracefully aborts, automatically cleans up corrupted internal states, and unlocks the UI without requiring a server restart.
+*   **Enhanced Setup Scripts:** The `Fresh Install` option across all OS setup scripts (`setup-windows.ps1`, `setup-ubuntu.sh`, `setup-centos.sh`) now aggressively prunes all orphaned containers, dangling images, and volumes, guaranteeing a pristine Docker environment.
+*   **UI & UX Polish:** Removed double-scrollbars inside the Engine Setup modals by adopting a dynamic Flexbox layout, fixed phantom map boundaries persisting after states are deleted, and resolved a bug where backend startup logs would prematurely disable deployment buttons.
 
 ## 🌟 Features
 

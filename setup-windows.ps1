@@ -47,8 +47,8 @@ if (Check-Command "docker") {
         exit 0
     } elseif ($choice -eq '1') {
         Write-Host "[*] Tearing down existing deployment to start fresh..." -ForegroundColor Yellow
-        docker compose down -v 2>$null
-        docker compose -f docker-compose.prod.yml down -v 2>$null
+        docker compose down -v --rmi all --remove-orphans 2>$null
+        docker compose -f docker-compose.prod.yml down -v --rmi all --remove-orphans 2>$null
         $containers = docker ps -aq --filter name=routeops
         if ($containers) { docker rm -f $containers 2>$null }
         $containersOsrm = docker ps -aq --filter name=osrm
