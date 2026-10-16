@@ -38,6 +38,7 @@ if command_exists docker; then
         echo "[*] Updating production deployment..."
         git pull origin main || echo "[-] git pull failed! (If you downloaded a ZIP, this is normal. Ensure you manually copy the latest files here.)"
         docker compose -f docker-compose.prod.yml up -d --build || { echo "[-] docker compose failed!"; exit 1; }
+
         docker image prune -f
         echo "[+] Deployment updated successfully."
         exit 0
@@ -45,6 +46,7 @@ if command_exists docker; then
         echo "[*] Tearing down existing deployment to start fresh..."
         docker compose down -v --rmi all --remove-orphans 2>/dev/null || true
         docker compose -f docker-compose.prod.yml down -v --rmi all --remove-orphans 2>/dev/null || true
+        docker compose -f docker-compose.geocoding.yml down -v --rmi all --remove-orphans 2>/dev/null || true
         # Aggressively remove any lingering routeops containers, images, and volumes
         docker rm -f $(docker ps -aq --filter name=routeops) 2>/dev/null || true
         docker rm -f $(docker ps -aq --filter name=osrm) 2>/dev/null || true

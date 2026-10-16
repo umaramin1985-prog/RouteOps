@@ -88,6 +88,12 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
   const [cityName, setCityName] = useState<string>('');
   const [copiedStart, setCopiedStart] = useState<boolean>(false);
   const [copiedEnd, setCopiedEnd] = useState<boolean>(false);
+  const [activeEngine, setActiveEngine] = useState<'osrm' | 'nominatim' | 'pelias'>('osrm');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [geocodePins, setGeocodePins] = useState<L.LatLng[]>([]);
+
 
   useEffect(() => {
     if (startPoint) setStartInputText(`${startPoint.lat.toFixed(5)}, ${startPoint.lng.toFixed(5)}`);
@@ -99,10 +105,16 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
     else setEndInputText('');
   }, [endPoint]);
 
+  const currentProfileStates = Array.isArray(dockerStatus?.active_states) 
+    ? dockerStatus?.active_states 
+    : (dockerStatus?.active_states && typeof dockerStatus?.active_states === 'object' 
+      ? (dockerStatus.active_states[profile] || []).filter((s: string) => s !== 'all') 
+      : activeStates);
+
   useEffect(() => {
-    if (activeStates && activeStates.length > 0) {
-        if (!selectedState || !activeStates.includes(selectedState)) {
-            const first = activeStates[0];
+    if (currentProfileStates && currentProfileStates.length > 0) {
+        if (!selectedState || !currentProfileStates.includes(selectedState)) {
+            const first = currentProfileStates[0];
             setSelectedState(first);
             const boundsData = (stateBounds as any)[first];
             if (boundsData) {
@@ -115,7 +127,46 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
     } else {
         setSelectedState('');
     }
-  }, [activeStates, selectedState]);
+  }, [currentProfileStates.join(','), selectedState]);
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setIsSearching(true);
+    setRouteError(null);
+    setSearchResults([]);
+    setGeocodePins([]);
+    
+    try {
+        if (activeEngine === 'nominatim') {
+            const port = dockerStatus?.nominatim_port || 8080;
+            const res = await fetch(`http://${window.location.hostname}:${port}/search?q=${encodeURIComponent(searchQuery)}&format=json`);
+            const data = await res.json();
+            if (data && data.length > 0) {
+                setSearchResults(data);
+                const bounds = L.latLngBounds(data.map((item: any) => [parseFloat(item.lat), parseFloat(item.lon)]));
+                setRouteBounds(bounds);
+                setGeocodePins(data.map((item: any) => L.latLng(parseFloat(item.lat), parseFloat(item.lon))));
+            } else {
+                setRouteError('No results found from Nominatim.');
+            }
+        } else if (activeEngine === 'pelias') {
+            const port = dockerStatus?.pelias_port || 4000;
+            const res = await fetch(`http://${window.location.hostname}:${port}/v1/autocomplete?text=${encodeURIComponent(searchQuery)}`);
+            const data = await res.json();
+            if (data && data.features && data.features.length > 0) {
+                setSearchResults(data.features);
+                const bounds = L.latLngBounds(data.features.map((item: any) => [item.geometry.coordinates[1], item.geometry.coordinates[0]]));
+                setRouteBounds(bounds);
+                setGeocodePins(data.features.map((item: any) => L.latLng(item.geometry.coordinates[1], item.geometry.coordinates[0])));
+            } else {
+                setRouteError('No results found from Pelias.');
+            }
+        }
+    } catch (e) {
+        setRouteError(`Failed to connect to ${activeEngine}.`);
+    }
+    setIsSearching(false);
+  };
 
   const showToast = (msg: string) => {
       setToastMessage(msg);
@@ -295,6 +346,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
 
   const handleMapClick = (latlng: L.LatLng) => {
     setRouteError(null);
+    if (activeEngine !== 'osrm') return;
     if (!startPoint || (startPoint && endPoint)) {
       setStartPoint(latlng);
       setEndPoint(null);
@@ -497,6 +549,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
         
         {startPoint && <Marker position={startPoint} icon={startIcon}><Popup>Start</Popup></Marker>}
         {endPoint && <Marker position={endPoint} icon={endIcon}><Popup>End</Popup></Marker>}
+        {activeEngine !== 'osrm' && geocodePins.map((pin, i) => <Marker key={`pin-${i}`} position={pin} icon={endIcon} />)}
         {/* Alternative Routes - Outlines */}
         {altRoutes.map((alt, i) => (
             <Polyline key={`alt-out-${i}`} positions={alt.coords} color="#6A7B94" weight={10} opacity={0.8} />
@@ -552,7 +605,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
         gap: '12px'
       }}>
         {/* Active States Dropdown */}
-        {activeStates.length > 0 && (
+        {currentProfileStates.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, border: '1px solid var(--input-border)', padding: '6px 12px' }}>
                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px' }}>Jump to Map:</span>
                 <select 
@@ -572,7 +625,7 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
                         }
                     }}
                 >
-                    {activeStates.map(st => (
+                    {currentProfileStates.map((st: string) => (
                         <option key={st} value={st} style={{ color: '#000' }}>
                             {st.charAt(0).toUpperCase() + st.slice(1).replace('-', ' ')}
                         </option>
@@ -598,6 +651,24 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
             </div>
         )}
         
+        {/* Engine Tabs */}
+        <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)', marginBottom: '4px' }}>
+            <button 
+                onClick={() => { setActiveEngine('osrm'); setRouteError(null); setRouteBounds(null); }}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: 0, border: 'none', background: activeEngine === 'osrm' ? '#3b82f6' : 'transparent', color: activeEngine === 'osrm' ? 'white' : 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer', fontWeight: activeEngine === 'osrm' ? 600 : 500, transition: 'all 0.2s', boxShadow: activeEngine === 'osrm' ? '0 2px 10px rgba(59,130,246,0.3)' : 'none' }}
+            >OSRM (Route)</button>
+            <button 
+                onClick={() => { setActiveEngine('nominatim'); setRouteError(null); setRouteBounds(null); }}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: 0, border: 'none', background: activeEngine === 'nominatim' ? '#8b5cf6' : 'transparent', color: activeEngine === 'nominatim' ? 'white' : 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer', fontWeight: activeEngine === 'nominatim' ? 600 : 500, transition: 'all 0.2s', boxShadow: activeEngine === 'nominatim' ? '0 2px 10px rgba(139,92,246,0.3)' : 'none' }}
+            >Nominatim</button>
+            <button 
+                onClick={() => { setActiveEngine('pelias'); setRouteError(null); setRouteBounds(null); }}
+                style={{ flex: 1, padding: '8px 10px', borderRadius: 0, border: 'none', background: activeEngine === 'pelias' ? '#10b981' : 'transparent', color: activeEngine === 'pelias' ? 'white' : 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer', fontWeight: activeEngine === 'pelias' ? 600 : 500, transition: 'all 0.2s', boxShadow: activeEngine === 'pelias' ? '0 2px 10px rgba(16,185,129,0.3)' : 'none' }}
+            >Pelias</button>
+        </div>
+
+        {activeEngine === 'osrm' ? (
+        <>
         {/* Start Input */}
         <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, border: '1px solid var(--input-border)', padding: '4px 12px' }}>
             <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 8px #22c55e', marginRight: '8px' }}></div>
@@ -807,6 +878,39 @@ export default function MapDisplay({ activeStates = [], isActive = true, dockerS
                     </div>
                 )}
             </div>
+        )}
+        </>
+        ) : (
+        <>
+            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, border: '1px solid var(--input-border)', padding: '4px 12px', marginTop: '4px' }}>
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: activeEngine === 'nominatim' ? '#8b5cf6' : '#10b981', boxShadow: `0 0 8px ${activeEngine === 'nominatim' ? '#8b5cf6' : '#10b981'}`, marginRight: '8px' }}></div>
+                <input 
+                    type="text" 
+                    placeholder={`Search with ${activeEngine}...`}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                            e.currentTarget.blur();
+                            handleSearch();
+                        }
+                    }}
+                    style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
+                />
+                <button 
+                    onClick={handleSearch}
+                    disabled={isSearching}
+                    style={{ background: '#3b82f6', border: 'none', color: 'white', padding: '4px 10px', borderRadius: '2px', cursor: 'pointer', fontSize: '11px', fontWeight: 600, marginLeft: '8px' }}
+                >
+                    {isSearching ? '...' : 'Search'}
+                </button>
+            </div>
+            {searchResults.length > 0 && (
+                <div style={{ background: 'var(--panel-inner-bg)', padding: '8px 12px', borderRadius: 0, border: '1px solid var(--input-border)', display: 'flex', flexDirection: 'column', marginTop: '4px' }}>
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Found {searchResults.length} results.</span>
+                </div>
+            )}
+        </>
         )}
       </div>
 
