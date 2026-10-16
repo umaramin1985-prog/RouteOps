@@ -80,7 +80,7 @@ export default function Login() {
           }}>
             <Map size={32} />
           </div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 600 }}>RouteOps</h1>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 600 }}>GeoOps</h1>
           <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>Transportation Management</p>
         </div>
 
@@ -197,7 +197,7 @@ export default function Login() {
         fontSize: '11px',
         background: 'rgba(0,0,0,0.3)'
       }}>
-        <span>&copy; {new Date().getFullYear()} IT Curves | RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
+        <span>&copy; {new Date().getFullYear()} IT Curves | GeoOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
       </footer>
     </div>
   );

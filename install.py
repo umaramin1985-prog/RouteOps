@@ -40,6 +40,7 @@ def main():
     print_step('Tearing down existing deployment if present...')
     run_cmd('docker compose down -v --rmi all --remove-orphans 2>/dev/null || true', ignore_error=True)
     run_cmd('docker compose -f docker-compose.prod.yml down -v --rmi all --remove-orphans 2>/dev/null || true', ignore_error=True)
+    run_cmd('docker compose -f docker-compose.geocoding.yml down -v --rmi all --remove-orphans 2>/dev/null || true', ignore_error=True)
     if sys.platform.startswith('win'):
         run_cmd('powershell -Command "$containers = docker ps -aq --filter name=routeops; if ($containers) { docker rm -f $containers 2>$null }"', ignore_error=True)
         run_cmd('powershell -Command "$containersOsrm = docker ps -aq --filter name=osrm; if ($containersOsrm) { docker rm -f $containersOsrm 2>$null }"', ignore_error=True)
@@ -127,6 +128,7 @@ def main():
     # 4. Start Docker Compose
     print_step('Spinning up the OSRM stack via docker-compose.prod.yml...')
     run_cmd('docker compose -f docker-compose.prod.yml up -d --build')
+    
     print_success('Docker containers started successfully.')
 
     print('\n\033[1;36m===================================================')

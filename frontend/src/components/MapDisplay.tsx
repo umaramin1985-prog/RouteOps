@@ -1,9 +1,47 @@
-import { useState, useEffect } from 'react';
-import { Map, Copy, Check } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Tooltip, useMapEvents, useMap, LayersControl, GeoJSON } from 'react-leaflet';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Search,
+  Navigation,
+  Car,
+  Footprints,
+  ArrowUpDown,
+  ArrowLeft,
+  X,
+  MapPin,
+  Copy,
+  Check,
+  RotateCcw,
+  CornerUpLeft,
+  CornerUpRight,
+  ArrowUp,
+  LocateFixed,
+  Plus,
+  Minus,
+  Wrench,
+  Sliders,
+  ChevronDown,
+  ChevronUp,
+  Trash2
+} from 'lucide-react';
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Polyline,
+  Tooltip,
+  useMapEvents,
+  useMap,
+  GeoJSON
+} from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
+import stateBounds from '../stateBounds.json';
+import usStatesGeoJson from '../us-states.json';
+import { searchPlaces, reverseGeocode } from '../utils/geocoding';
+import type { PlaceResult } from '../utils/geocoding';
+
+// Fix Leaflet marker icons
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
@@ -11,978 +49,2543 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
-const createPinIcon = (color: string) => new L.DivIcon({
-    html: `<svg width="28" height="42" viewBox="0 0 24 36" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0px 3px 3px rgba(0,0,0,0.3));">
-        <path d="M12 0C5.373 0 0 5.373 0 12c0 8.4 12 24 12 24s12-15.6 12-24c0-6.627-5.373-12-12-12z" fill="${color}" stroke="white" stroke-width="1.5"/>
-        <circle cx="12" cy="12" r="4" fill="white" />
-    </svg>`,
-    className: '',
-    iconSize: [28, 42],
-    iconAnchor: [14, 42],
-    popupAnchor: [0, -42]
+// ==========================================================================
+// Google Maps Authentic Marker Icons
+// ==========================================================================
+
+const gmapsStartIcon = new L.DivIcon({
+  html: `
+    <div style="display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: #ffffff; border: 4px solid #188038; box-shadow: 0 2px 6px rgba(0,0,0,0.4); cursor: grab;">
+      <div style="width: 6px; height: 6px; border-radius: 50%; background: #188038;"></div>
+    </div>
+  `,
+  className: '',
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+  popupAnchor: [0, -12]
 });
 
-const startIcon = createPinIcon('#22c55e');
-const endIcon = createPinIcon('#ef4444');
+const gmapsEndIcon = new L.DivIcon({
+  html: `
+    <svg width="28" height="40" viewBox="0 0 28 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.4)); cursor: grab;">
+      <path d="M14 0C6.268 0 0 6.268 0 14C0 24.5 14 40 14 40S28 24.5 28 14C28 6.268 21.732 0 14 0Z" fill="#EA4335"/>
+      <circle cx="14" cy="14" r="5.5" fill="#B31412"/>
+    </svg>
+  `,
+  className: '',
+  iconSize: [28, 40],
+  iconAnchor: [14, 40],
+  popupAnchor: [0, -40]
+});
 
-function MapClickHandler({ onMapClick }: { onMapClick: (latlng: L.LatLng) => void }) {
-  useMapEvents({ click(e) { onMapClick(e.latlng); } });
+const createGmapsStopIcon = (label: string | number) => new L.DivIcon({
+  html: `
+    <div style="display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: #ffffff; border: 3px solid #1a73e8; box-shadow: 0 2px 6px rgba(0,0,0,0.4); cursor: grab; font-family: Inter, sans-serif; font-size: 11px; font-weight: 700; color: #1a73e8;">
+      ${label}
+    </div>
+  `,
+  className: '',
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+  popupAnchor: [0, -12]
+});
+
+const gmapsPlaceIcon = new L.DivIcon({
+  html: `
+    <svg width="26" height="38" viewBox="0 0 28 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.4)); cursor: pointer;">
+      <path d="M14 0C6.268 0 0 6.268 0 14C0 24.5 14 40 14 40S28 24.5 28 14C28 6.268 21.732 0 14 0Z" fill="#EA4335"/>
+      <circle cx="14" cy="14" r="5" fill="#FFFFFF"/>
+    </svg>
+  `,
+  className: '',
+  iconSize: [26, 38],
+  iconAnchor: [13, 38],
+  popupAnchor: [0, -38]
+});
+
+const gmapsGpsIcon = new L.DivIcon({
+  html: `
+    <div class="gmaps-gps-pulse">
+      <div class="gmaps-gps-dot"></div>
+    </div>
+  `,
+  className: '',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9]
+});
+
+// ==========================================================================
+// Map Interaction Bridge
+// ==========================================================================
+
+function MapControllerBridge({
+  onMapReady,
+  onMapClick,
+  onContextMenu
+}: {
+  onMapReady: (map: L.Map) => void;
+  onMapClick: (latlng: L.LatLng) => void;
+  onContextMenu: (e: L.LeafletMouseEvent) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    onMapReady(map);
+  }, [map, onMapReady]);
+
+  useMapEvents({
+    click(e) {
+      onMapClick(e.latlng);
+    },
+    contextmenu(e) {
+      e.originalEvent.preventDefault();
+      onContextMenu(e);
+    }
+  });
+
   return null;
 }
 
 function MapFitter({ bounds }: { bounds: L.LatLngBounds | null }) {
-    const map = useMap();
-    useEffect(() => {
-        if (bounds) {
-            map.fitBounds(bounds, { padding: [50, 50] });
-        }
-    }, [bounds, map]);
-    return null;
+  const map = useMap();
+  useEffect(() => {
+    if (bounds) {
+      map.fitBounds(bounds, { padding: [60, 60] });
+    }
+  }, [bounds, map]);
+  return null;
 }
 
+// ==========================================================================
+// Main MapDisplay Component
+// ==========================================================================
 
-import stateBounds from '../stateBounds.json';
-import usStatesGeoJson from '../us-states.json';
+interface IntermediateStop {
+  id: string;
+  point: L.LatLng | null;
+  text: string;
+}
 
-export default function MapDisplay({ activeStates = [], isActive = true, dockerStatus = null }: { activeStates?: string[], isActive?: boolean, dockerStatus?: any }) {
+interface MapDisplayProps {
+  activeStates?: string[];
+  isActive?: boolean;
+  dockerStatus?: any;
+}
+
+export default function MapDisplay({
+  activeStates = [],
+  isActive = true,
+  dockerStatus = null
+}: MapDisplayProps) {
   const role = localStorage.getItem('role') || 'admin';
-  const marylandCenter: [number, number] = [39.0458, -76.6413];
-  
+  const defaultCenter: [number, number] = [39.0458, -76.6413]; // Maryland
+
+  const mapInstanceRef = useRef<L.Map | null>(null);
+
+  // Layout mode: 'search' or 'directions'
+  const [panelMode, setPanelMode] = useState<'search' | 'directions'>('search');
+
+  // Map Layer: 'osm' (Default) or 'satellite'
+  const [mapLayer, setMapLayer] = useState<'osm' | 'satellite'>('osm');
+
+  // Search input state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  // Active Place Card (from search or "What's here?")
+  const [activePlace, setActivePlace] = useState<{
+    title: string;
+    subtitle: string;
+    lat: number;
+    lng: number;
+  } | null>(null);
+
+  // Origin & Destination state
   const [startPoint, setStartPoint] = useState<L.LatLng | null>(null);
   const [endPoint, setEndPoint] = useState<L.LatLng | null>(null);
-  const [startInputText, setStartInputText] = useState<string>('');
-  const [endInputText, setEndInputText] = useState<string>('');
-  const [routeCoordinates, setRouteCoordinates] = useState<[number, number][]>([]);
-  const [distance, setDistance] = useState<string>('');
-  const [mainRouteInfo, setMainRouteInfo] = useState<{distance: string, duration: string} | null>(null);
-  const [rawJson, setRawJson] = useState<any>(null);
-  const [rawRequestUrl, setRawRequestUrl] = useState<string>('');
-  const [showRawJson, setShowRawJson] = useState<boolean>(false);
-  const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
-  const [copiedJson, setCopiedJson] = useState<boolean>(false);
+  const [startInputText, setStartInputText] = useState('');
+  const [endInputText, setEndInputText] = useState('');
 
-  const [routeBounds, setRouteBounds] = useState<L.LatLngBounds | null>(null);
+  // Multi-stop Routing: Intermediate Destinations
+  const [stops, setStops] = useState<IntermediateStop[]>([]);
+
+  // Autocomplete Suggestions
+  const [startSuggestions, setStartSuggestions] = useState<PlaceResult[]>([]);
+  const [endSuggestions, setEndSuggestions] = useState<PlaceResult[]>([]);
+  const [stopSuggestions, setStopSuggestions] = useState<PlaceResult[]>([]);
+  const [activeInputFocus, setActiveInputFocus] = useState<string | null>(null);
+
+  // Travel Mode: 'car' | 'foot'
   const [profile, setProfile] = useState<'car' | 'foot'>('car');
-  const [routeError, setRouteError] = useState<string | null>(null);
-  
-  // Road Editing State
-  const [routeNodes, setRouteNodes] = useState<number[]>([]);
-  const [newSpeed, setNewSpeed] = useState<number>(30);
-  const [isClosing, setIsClosing] = useState<boolean>(false);
-  const [activeOverrides, setActiveOverrides] = useState<any[]>([]);
-
-  const [isSameRoad, setIsSameRoad] = useState<boolean>(true);
-  const [showAlternatives, setShowAlternatives] = useState<boolean>(true);
-  const [altRoutes, setAltRoutes] = useState<{coords: [number, number][], distance: string, duration: string}[]>([]);
-  const [routeSteps, setRouteSteps] = useState<any[]>([]);
-  const [showSteps, setShowSteps] = useState<boolean>(false);
-  const [avoidTolls, setAvoidTolls] = useState<boolean>(false);
   const [routePreference, setRoutePreference] = useState<'fastest' | 'shortest'>('fastest');
-  const [isBidirectional, setIsBidirectional] = useState<boolean>(true);
-  const [backSpeed, setBackSpeed] = useState<number>(30);
-  const [isBackClosing, setIsBackClosing] = useState<boolean>(false);
-  const [editReason, setEditReason] = useState<string>('');
+  const [avoidTolls, setAvoidTolls] = useState(false);
+  const [showAlternatives, setShowAlternatives] = useState(true);
+  const [showOptionsBar, setShowOptionsBar] = useState(false);
+
+  // Routing results
+  const [allRoutes, setAllRoutes] = useState<any[]>([]);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+  const [routeCoordinates, setRouteCoordinates] = useState<[number, number][]>([]);
+  const [altRoutes, setAltRoutes] = useState<{ coords: [number, number][]; distance: string; duration: string; via: string; index: number }[]>([]);
+  const [mainRouteInfo, setMainRouteInfo] = useState<{ distance: string; duration: string; via: string } | null>(null);
+  const [routeSteps, setRouteSteps] = useState<any[]>([]);
+  const [showSteps, setShowSteps] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeBounds, setRouteBounds] = useState<L.LatLngBounds | null>(null);
+
+  // User GPS Location
+  const [userLocation, setUserLocation] = useState<L.LatLng | null>(null);
+
+  // Right-click Context Menu
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    latlng: L.LatLng;
+  } | null>(null);
+
+  // Road Editor & GeoOps tools
+  const [isToolsOpen, setIsToolsOpen] = useState(false);
+  const [selectedState, setSelectedState] = useState('');
+  const [activeEngine, setActiveEngine] = useState<'osrm' | 'nominatim' | 'pelias'>('osrm');
+  const [activeOverrides, setActiveOverrides] = useState<any[]>([]);
+  const [routeNodes, setRouteNodes] = useState<number[]>([]);
+  const [isSameRoad, setIsSameRoad] = useState(true);
+  const [roadName, setRoadName] = useState('');
+  const [cityName, setCityName] = useState('');
+  const [newSpeed, setNewSpeed] = useState(30);
+  const [isClosing, setIsClosing] = useState(false);
+  const [isBidirectional, setIsBidirectional] = useState(true);
+  const [backSpeed, setBackSpeed] = useState(30);
+  const [isBackClosing, setIsBackClosing] = useState(false);
+  const [editReason, setEditReason] = useState('');
+
+  // Raw JSON Debug Modal
+  const [showRawJson, setShowRawJson] = useState(false);
+  const [rawJson, setRawJson] = useState<any>(null);
+  const [rawRequestUrl, setRawRequestUrl] = useState('');
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedJson, setCopiedJson] = useState(false);
+
+  // Toasts
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [selectedState, setSelectedState] = useState<string>('');
-  const [roadName, setRoadName] = useState<string>('');
-  const [cityName, setCityName] = useState<string>('');
-  const [copiedStart, setCopiedStart] = useState<boolean>(false);
-  const [copiedEnd, setCopiedEnd] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (startPoint) setStartInputText(`${startPoint.lat.toFixed(5)}, ${startPoint.lng.toFixed(5)}`);
-    else setStartInputText('');
-  }, [startPoint]);
-
-  useEffect(() => {
-    if (endPoint) setEndInputText(`${endPoint.lat.toFixed(5)}, ${endPoint.lng.toFixed(5)}`);
-    else setEndInputText('');
-  }, [endPoint]);
-
-  useEffect(() => {
-    if (activeStates && activeStates.length > 0) {
-        if (!selectedState || !activeStates.includes(selectedState)) {
-            const first = activeStates[0];
-            setSelectedState(first);
-            const boundsData = (stateBounds as any)[first];
-            if (boundsData) {
-                setRouteBounds(L.latLngBounds([
-                    [boundsData[0][0], boundsData[0][1]], 
-                    [boundsData[1][0], boundsData[1][1]]
-                ]));
-            }
-        }
-    } else {
-        setSelectedState('');
-    }
-  }, [activeStates, selectedState]);
 
   const showToast = (msg: string) => {
-      setToastMessage(msg);
-      setTimeout(() => setToastMessage(null), 4000);
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
+  /**
+   * Complete reset: Clears all push pins (start, end, stops, dropped place, GPS), inputs, and routes.
+   */
+  const clearAllPinsAndRoute = () => {
+    setStartPoint(null);
+    setEndPoint(null);
+    setStops([]);
+    setActivePlace(null);
+    setUserLocation(null);
+    setStartInputText('');
+    setEndInputText('');
+    setSearchQuery('');
+    setSearchResults([]);
+    setStartSuggestions([]);
+    setEndSuggestions([]);
+    setStopSuggestions([]);
+    setRouteCoordinates([]);
+    setAltRoutes([]);
+    setMainRouteInfo(null);
+    setRouteSteps([]);
+    setShowSteps(false);
+    setRouteError(null);
+    setRouteNodes([]);
+    setRouteBounds(null);
+    setIsSameRoad(true);
+    setRoadName('');
+    showToast('Cleared all points and routes.');
+  };
+
+  // Add intermediate destination stop
+  const addDestinationStop = () => {
+    if (stops.length >= 8) {
+      showToast('Maximum of 8 stops allowed.');
+      return;
+    }
+    const newId = `stop-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    setStops((prev) => [...prev, { id: newId, point: null, text: '' }]);
+  };
+
+  const removeDestinationStop = (id: string) => {
+    setStops((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  const updateStopText = (id: string, text: string) => {
+    setStops((prev) => prev.map((s) => (s.id === id ? { ...s, text } : s)));
+  };
+
+  const updateStopPoint = async (id: string, point: L.LatLng, text?: string) => {
+    const defaultText = text || `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
+    setStops((prev) => prev.map((s) => (s.id === id ? { ...s, point, text: defaultText } : s)));
+    if (!text) {
+      const geo = await reverseGeocode(point.lat, point.lng, dockerStatus);
+      if (geo.formattedAddress) {
+        setStops((prev) => prev.map((s) => (s.id === id ? { ...s, text: geo.formattedAddress } : s)));
+      }
+    }
+  };
+
+  // Determine active profile states
+  const currentProfileStates = Array.isArray(dockerStatus?.active_states)
+    ? dockerStatus.active_states
+    : (dockerStatus?.active_states && typeof dockerStatus.active_states === 'object'
+      ? (dockerStatus.active_states[profile] || []).filter((s: string) => s !== 'all')
+      : activeStates);
+
+  useEffect(() => {
+    if (currentProfileStates && currentProfileStates.length > 0) {
+      if (!selectedState || !currentProfileStates.includes(selectedState)) {
+        const first = currentProfileStates[0];
+        setSelectedState(first);
+        const boundsData = (stateBounds as any)[first];
+        if (boundsData) {
+          setRouteBounds(L.latLngBounds([
+            [boundsData[0][0], boundsData[0][1]],
+            [boundsData[1][0], boundsData[1][1]]
+          ]));
+        }
+      }
+    }
+  }, [currentProfileStates.join(','), selectedState]);
+
+  // Fetch overrides on load
   const fetchOverrides = async () => {
-      try {
-          const res = await fetch(`/api/overrides`, { cache: 'no-store' });
-          const data = await res.json();
-          setActiveOverrides(data);
-      } catch(err) {
-          console.error(err);
+    try {
+      const res = await fetch(`/api/overrides`, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        setActiveOverrides(data);
       }
-  };
-
-  const fetchRoute = () => {
-    if (startPoint && endPoint) {
-      const port = profile === 'car' ? (dockerStatus?.car_port || 5001) : (dockerStatus?.foot_port || 5005);
-      const profileName = profile === 'car' ? 'driving' : 'foot';
-      const altsParam = (showAlternatives || routePreference === 'shortest') ? '3' : 'false';
-      
-      let url = `http://${window.location.hostname}:${port}/route/v1/${profileName}/${startPoint.lng},${startPoint.lat};${endPoint.lng},${endPoint.lat}?overview=full&geometries=geojson&annotations=nodes,speed&steps=true&alternatives=${altsParam}`;
-      if (avoidTolls && profile === 'car') {
-          url += '&exclude=toll';
-      }
-      setRawRequestUrl(url);
-      
-      fetch(url)
-        .then(res => res.json())
-        .then(data => {
-          setRawJson(data);
-          if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-            
-            // Check snap distance to see if it's way out of bounds (e.g. >2000m)
-            const snapStart = L.latLng(data.waypoints[0].location[1], data.waypoints[0].location[0]);
-            const snapEnd = L.latLng(data.waypoints[1].location[1], data.waypoints[1].location[0]);
-            
-            if (startPoint.distanceTo(snapStart) > 2000 || endPoint.distanceTo(snapEnd) > 2000) {
-                setRouteError('Marker dropped outside installed map regions. OSRM cannot route here.');
-                setRouteCoordinates([]);
-                setAltRoutes([]);
-                setDistance('');
-                setMainRouteInfo(null);
-                setRouteNodes([]);
-                setRouteSteps([]);
-                return;
-            }
-            
-            setRouteError(null);
-            
-            let allRoutes = data.routes;
-            let primaryIndex = 0;
-            
-            if (routePreference === 'shortest') {
-                let minIdx = 0;
-                let minDistance = Infinity;
-                allRoutes.forEach((r: any, idx: number) => {
-                    if (r.distance < minDistance) {
-                        minDistance = r.distance;
-                        minIdx = idx;
-                    }
-                });
-                primaryIndex = minIdx;
-            }
-            
-            const primaryRoute = allRoutes[primaryIndex];
-            const altRoutesData = allRoutes.filter((_: any, idx: number) => idx !== primaryIndex);
-            
-            const coords = primaryRoute.geometry.coordinates.map((c: number[]) => [c[1], c[0]]);
-            setRouteCoordinates(coords);
-            
-            if (showAlternatives && altRoutesData.length > 0) {
-                const alts = altRoutesData.map((r: any) => {
-                    const coords = r.geometry.coordinates.map((c: number[]) => [c[1], c[0]]);
-                    const distMiles = (r.distance / 1609.34).toFixed(2);
-                    const durationMins = Math.ceil(r.duration / 60);
-                    return { coords, distance: distMiles, duration: durationMins.toString() };
-                });
-                setAltRoutes(alts);
-            } else {
-                setAltRoutes([]);
-            }
-            
-            const distMiles = (primaryRoute.distance / 1609.34).toFixed(2);
-            const durationMins = Math.ceil(primaryRoute.duration / 60);
-            setDistance(`${distMiles} mi, ${durationMins} min`);
-            setMainRouteInfo({ distance: distMiles, duration: durationMins.toString() });
-            
-            // Auto fit bounds
-            if (coords.length > 0) {
-                setRouteBounds(L.polyline(coords).getBounds());
-            }
-            
-            // Extract the OSM Node IDs and Speeds from the route
-            if (primaryRoute.legs[0].annotation) {
-                if (primaryRoute.legs[0].annotation.nodes) {
-                    setRouteNodes(primaryRoute.legs[0].annotation.nodes);
-                }
-                if (primaryRoute.legs[0].annotation.speed && primaryRoute.legs[0].annotation.speed.length > 0) {
-                    const speedMs = primaryRoute.legs[0].annotation.speed[0];
-                    const speedMph = Math.round(speedMs * 2.23694);
-
-                    setNewSpeed(speedMph);
-                    setBackSpeed(speedMph);
-                }
-            }
-            
-            if (primaryRoute.legs[0].steps) {
-                const steps = primaryRoute.legs[0].steps;
-                setRouteSteps(steps);
-                
-                const roadNames = new Set(
-                    steps.slice(0, -1)
-                         .map((s: any) => s.name || s.ref || '')
-                         .filter((name: string) => name && name.toLowerCase() !== 'unnamed')
-                );
-                setIsSameRoad(roadNames.size <= 1);
-                if (roadNames.size > 0) {
-                    setRoadName(Array.from(roadNames)[0] as string);
-                } else {
-                    setRoadName('');
-                }
-                
-                fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${startPoint.lat}&lon=${startPoint.lng}`)
-                    .then(res => res.json())
-                    .then(geoData => {
-                        if (geoData && geoData.address) {
-                            const addr = geoData.address;
-                            const city = addr.city || addr.town || addr.village || addr.municipality || addr.county || '';
-                            setCityName(city);
-                        }
-                    })
-                    .catch(err => console.error("Reverse geocoding error:", err));
-            }
-          } else {
-            setRouteCoordinates([]);
-            setAltRoutes([]);
-            setDistance('');
-            setMainRouteInfo(null);
-            setRouteNodes([]);
-            setRouteSteps([]);
-            setRouteSteps([]);
-            setIsSameRoad(true);
-            setRoadName('');
-            setCityName('');
-            setRouteError(data.message || 'No route found between these points.');
-          }
-        })
-        .catch(err => {
-            console.error("Error fetching route:", err);
-            setRouteCoordinates([]);
-            setAltRoutes([]);
-            setDistance('');
-            setMainRouteInfo(null);
-            setRouteNodes([]);
-            setRouteSteps([]);
-            setRouteSteps([]);
-            setRouteError('Failed to connect to the routing engine.');
-        });
+    } catch (err) {
+      console.error('Failed to fetch overrides:', err);
     }
   };
 
   useEffect(() => {
-    fetchRoute();
-  }, [startPoint, endPoint, profile, showAlternatives, avoidTolls, routePreference]);
-
-  useEffect(() => {
-      fetchOverrides();
+    fetchOverrides();
   }, []);
 
   useEffect(() => {
-      if (isActive) {
-          fetchOverrides();
-      }
+    if (isActive) fetchOverrides();
   }, [isActive]);
 
-  const handleMapClick = (latlng: L.LatLng) => {
-    setRouteError(null);
-    if (!startPoint || (startPoint && endPoint)) {
-      setStartPoint(latlng);
-      setEndPoint(null);
-      setRouteCoordinates([]);
-      setAltRoutes([]);
-      setDistance('');
-      setMainRouteInfo(null);
-      setRouteNodes([]);
-      setRouteSteps([]);
-      setShowSteps(false);
-      setRouteBounds(null);
+  // ==========================================================================
+  // Autocomplete Searches with Debounce
+  // ==========================================================================
 
-      setIsSameRoad(true);
-      setRoadName('');
-      setIsBidirectional(true);
-      setEditReason('');
-    } else {
-      setEndPoint(latlng);
+  // Main search bar autocomplete
+  useEffect(() => {
+    if (!searchQuery.trim() || panelMode !== 'search') {
+      setSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      const results = await searchPlaces(searchQuery, { dockerStatus, activeEngine });
+      setSearchResults(results);
+      setIsSearching(false);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [searchQuery, panelMode, activeEngine, dockerStatus]);
+
+  // Start input autocomplete
+  useEffect(() => {
+    if (!startInputText.trim() || activeInputFocus !== 'start') {
+      setStartSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const results = await searchPlaces(startInputText, { dockerStatus, activeEngine });
+      setStartSuggestions(results);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [startInputText, activeInputFocus, activeEngine, dockerStatus]);
+
+  // End input autocomplete
+  useEffect(() => {
+    if (!endInputText.trim() || activeInputFocus !== 'end') {
+      setEndSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const results = await searchPlaces(endInputText, { dockerStatus, activeEngine });
+      setEndSuggestions(results);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [endInputText, activeInputFocus, activeEngine, dockerStatus]);
+
+  // Intermediate stop autocomplete
+  const activeFocusedStop = useMemo(
+    () => stops.find((s) => s.id === activeInputFocus),
+    [stops, activeInputFocus]
+  );
+
+  useEffect(() => {
+    if (!activeFocusedStop || !activeFocusedStop.text.trim()) {
+      setStopSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const results = await searchPlaces(activeFocusedStop.text, { dockerStatus, activeEngine });
+      setStopSuggestions(results);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [activeFocusedStop?.text, activeEngine, dockerStatus]);
+
+  // ==========================================================================
+  // OSRM Multi-Stop Route Calculation
+  // ==========================================================================
+
+  const fetchRoute = () => {
+    const validPoints: L.LatLng[] = [];
+    if (startPoint) validPoints.push(startPoint);
+    for (const s of stops) {
+      if (s.point) validPoints.push(s.point);
+    }
+    if (endPoint) validPoints.push(endPoint);
+
+    if (validPoints.length < 2) return;
+
+    const port = profile === 'car' ? (dockerStatus?.car_port || 5001) : (dockerStatus?.foot_port || 5005);
+    const profileName = profile === 'car' ? 'driving' : 'foot';
+    // OSRM only generates alternative routes for 2-waypoint queries
+    const altsParam = (validPoints.length === 2 && (showAlternatives || routePreference === 'shortest')) ? '3' : 'false';
+
+    const coordsStr = validPoints.map((p) => `${p.lng},${p.lat}`).join(';');
+    let url = `http://${window.location.hostname}:${port}/route/v1/${profileName}/${coordsStr}?overview=full&geometries=geojson&annotations=nodes,speed&steps=true&alternatives=${altsParam}`;
+    if (avoidTolls && profile === 'car') {
+      url += '&exclude=toll';
+    }
+    setRawRequestUrl(url);
+
+    fetch(url)
+      .then((res) => res.json())
+      .then((data) => {
+        setRawJson(data);
+        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+          // Snap validation on endpoints
+          const snapStart = L.latLng(data.waypoints[0].location[1], data.waypoints[0].location[0]);
+          const snapEnd = L.latLng(data.waypoints[data.waypoints.length - 1].location[1], data.waypoints[data.waypoints.length - 1].location[0]);
+
+          if (startPoint && startPoint.distanceTo(snapStart) > 3000) {
+            setRouteError('Start point dropped outside installed OSRM region.');
+            setRouteCoordinates([]);
+            setAltRoutes([]);
+            setMainRouteInfo(null);
+            return;
+          }
+          if (endPoint && endPoint.distanceTo(snapEnd) > 3000) {
+            setRouteError('Destination dropped outside installed OSRM region.');
+            setRouteCoordinates([]);
+            setAltRoutes([]);
+            setMainRouteInfo(null);
+            return;
+          }
+
+          setRouteError(null);
+          setAllRoutes(data.routes);
+
+          let primaryIdx = 0;
+          if (routePreference === 'shortest') {
+            let minDistance = Infinity;
+            data.routes.forEach((r: any, idx: number) => {
+              if (r.distance < minDistance) {
+                minDistance = r.distance;
+                primaryIdx = idx;
+              }
+            });
+          }
+          applySelectedRoute(data.routes, primaryIdx);
+        } else {
+          setRouteCoordinates([]);
+          setAltRoutes([]);
+          setMainRouteInfo(null);
+          setRouteNodes([]);
+          setRouteSteps([]);
+          setRouteError(data.message || 'No route found between these points.');
+        }
+      })
+      .catch((err) => {
+        console.error('OSRM route error:', err);
+        setRouteCoordinates([]);
+        setAltRoutes([]);
+        setMainRouteInfo(null);
+        setRouteError('Failed to connect to OSRM routing engine.');
+      });
+  };
+
+  const applySelectedRoute = (routesList: any[], primaryIndex: number) => {
+    setSelectedRouteIndex(primaryIndex);
+    const primaryRoute = routesList[primaryIndex];
+    const coords: [number, number][] = primaryRoute.geometry.coordinates.map((c: number[]) => [c[1], c[0]]);
+    setRouteCoordinates(coords);
+
+    // Alternative routes (if 2 points)
+    const alts = routesList
+      .map((r: any, idx: number) => {
+        if (idx === primaryIndex) return null;
+        const altCoords: [number, number][] = r.geometry.coordinates.map((c: number[]) => [c[1], c[0]]);
+        const distMiles = (r.distance / 1609.34).toFixed(1);
+        const durationMins = Math.ceil(r.duration / 60);
+        const viaName = r.legs?.[0]?.steps?.find((s: any) => s.name && s.name.length > 2)?.name || 'Alternate';
+        return {
+          coords: altCoords,
+          distance: `${distMiles} mi`,
+          duration: `${durationMins} min`,
+          via: viaName,
+          index: idx
+        };
+      })
+      .filter(Boolean) as any[];
+
+    setAltRoutes(showAlternatives ? alts : []);
+
+    const distMiles = (primaryRoute.distance / 1609.34).toFixed(1);
+    const durationMins = Math.ceil(primaryRoute.duration / 60);
+    const viaRoad = primaryRoute.legs?.[0]?.steps?.find((s: any) => s.name && s.name.length > 2)?.name || 'Fastest Route';
+
+    setMainRouteInfo({
+      distance: `${distMiles} mi`,
+      duration: `${durationMins} min`,
+      via: viaRoad
+    });
+
+    if (coords.length > 0) {
+      setRouteBounds(L.polyline(coords).getBounds());
+    }
+
+    // Flatten turn-by-turn steps across all route legs
+    if (primaryRoute.legs) {
+      const allLegSteps = primaryRoute.legs.flatMap((leg: any) => leg.steps || []);
+      setRouteSteps(allLegSteps);
+
+      const roadNames = new Set(
+        allLegSteps.slice(0, -1)
+          .map((s: any) => s.name || s.ref || '')
+          .filter((name: string) => name && name.toLowerCase() !== 'unnamed')
+      );
+      setIsSameRoad(roadNames.size <= 1);
+      if (roadNames.size > 0) {
+        setRoadName(Array.from(roadNames)[0] as string);
+      } else {
+        setRoadName('');
+      }
+
+      if (primaryRoute.legs[0]?.annotation) {
+        if (primaryRoute.legs[0].annotation.nodes) {
+          setRouteNodes(primaryRoute.legs[0].annotation.nodes);
+        }
+        if (primaryRoute.legs[0].annotation.speed && primaryRoute.legs[0].annotation.speed.length > 0) {
+          const speedMs = primaryRoute.legs[0].annotation.speed[0];
+          const speedMph = Math.round(speedMs * 2.23694);
+          setNewSpeed(speedMph);
+          setBackSpeed(speedMph);
+        }
+      }
     }
   };
 
+  useEffect(() => {
+    const validPoints = [startPoint, ...stops.map((s) => s.point), endPoint].filter(Boolean);
+    if (validPoints.length >= 2) {
+      fetchRoute();
+    }
+  }, [startPoint, endPoint, stops, profile, showAlternatives, avoidTolls, routePreference]);
+
+  // ==========================================================================
+  // Map Interaction Handlers (Draggable Markers & Context Menu)
+  // ==========================================================================
+
+  const handleMapClick = async (latlng: L.LatLng) => {
+    setContextMenu(null);
+
+    if (panelMode === 'directions') {
+      // Check if user clicked an empty stop input first
+      if (activeInputFocus && activeInputFocus.startsWith('stop-')) {
+        updateStopPoint(activeInputFocus, latlng);
+        setActiveInputFocus(null);
+        return;
+      }
+
+      if (!startPoint) {
+        setStartPoint(latlng);
+        setStartInputText(`${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`);
+        const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus);
+        if (geo.formattedAddress) setStartInputText(geo.formattedAddress);
+        if (geo.city) setCityName(geo.city);
+      } else {
+        // Check for any empty intermediate stop
+        const emptyStop = stops.find((s) => !s.point);
+        if (emptyStop) {
+          updateStopPoint(emptyStop.id, latlng);
+        } else if (!endPoint) {
+          setEndPoint(latlng);
+          setEndInputText(`${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`);
+          const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus);
+          if (geo.formattedAddress) setEndInputText(geo.formattedAddress);
+        }
+      }
+    } else {
+      // In search mode: drop place pin & inspect "What's here?"
+      setActivePlace({
+        title: 'Dropped Pin',
+        subtitle: `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`,
+        lat: latlng.lat,
+        lng: latlng.lng
+      });
+
+      const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus);
+      if (geo.formattedAddress) {
+        setActivePlace({
+          title: geo.road || geo.city || 'Dropped Pin',
+          subtitle: geo.formattedAddress,
+          lat: latlng.lat,
+          lng: latlng.lng
+        });
+      }
+      if (geo.city) setCityName(geo.city);
+    }
+    setActiveInputFocus(null);
+  };
+
+  /**
+   * Position the context menu right beside the mouse click,
+   * calculated against the map container's bounding rectangle.
+   */
+  const handleMapContextMenu = (e: L.LeafletMouseEvent) => {
+    const container = mapInstanceRef.current?.getContainer();
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const rawX = e.originalEvent.clientX - rect.left;
+    const rawY = e.originalEvent.clientY - rect.top;
+
+    const menuWidth = 220;
+    const menuHeight = 250;
+    const cWidth = container.clientWidth;
+    const cHeight = container.clientHeight;
+
+    // Flip inward if clicked close to container edges
+    const x = (rawX + menuWidth > cWidth) ? Math.max(8, rawX - menuWidth) : rawX;
+    const y = (rawY + menuHeight > cHeight) ? Math.max(8, rawY - menuHeight) : rawY;
+
+    setContextMenu({
+      x,
+      y,
+      latlng: e.latlng
+    });
+  };
+
+  const handleDragStartMarker = async (newLatLng: L.LatLng) => {
+    setStartPoint(newLatLng);
+    setStartInputText(`${newLatLng.lat.toFixed(5)}, ${newLatLng.lng.toFixed(5)}`);
+    const geo = await reverseGeocode(newLatLng.lat, newLatLng.lng, dockerStatus);
+    if (geo.formattedAddress) setStartInputText(geo.formattedAddress);
+    if (geo.city) setCityName(geo.city);
+  };
+
+  const handleDragEndMarker = async (newLatLng: L.LatLng) => {
+    setEndPoint(newLatLng);
+    setEndInputText(`${newLatLng.lat.toFixed(5)}, ${newLatLng.lng.toFixed(5)}`);
+    const geo = await reverseGeocode(newLatLng.lat, newLatLng.lng, dockerStatus);
+    if (geo.formattedAddress) setEndInputText(geo.formattedAddress);
+  };
+
+  // Google Maps My Location GPS Button
+  const handleLocateMe = () => {
+    if (!navigator.geolocation) {
+      showToast('Geolocation is not supported by your browser.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const userLatLng = L.latLng(lat, lng);
+        setUserLocation(userLatLng);
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.flyTo(userLatLng, 15, { duration: 1.5 });
+        }
+        showToast('Located your current position.');
+      },
+      () => {
+        showToast('Unable to retrieve your location.');
+      },
+      { enableHighAccuracy: true, timeout: 5000 }
+    );
+  };
+
+  // Road Editor submission
   const applyRoadEdit = async () => {
     if (routeNodes.length < 2) return;
-    
     if (!editReason.trim()) {
-        showToast("Please provide a description for this edit.");
-        return;
+      showToast('Please provide a reason for this edit.');
+      return;
     }
-    
+
     const from_node = routeNodes.join(',');
     const to_node = '';
     const editLat = routeCoordinates[0][0];
     const editLng = routeCoordinates[0][1];
-    
-    const edits = [];
-    
+    const edits: any[] = [];
+
     if (isBidirectional) {
-        edits.push({
-            from_node,
-            to_node,
-            speed_kmh: isClosing ? 0 : Math.round(newSpeed * 1.60934),
-            is_closed: isClosing,
-            is_bidirectional: true,
-            reason: editReason.trim(),
-            lat: editLat,
-            lng: editLng,
-            geometry: JSON.stringify(routeCoordinates),
-            road_name: roadName,
-            city_name: cityName
-        });
+      edits.push({
+        from_node,
+        to_node,
+        speed_kmh: isClosing ? 0 : Math.round(newSpeed * 1.60934),
+        is_closed: isClosing,
+        is_bidirectional: true,
+        reason: editReason.trim(),
+        lat: editLat,
+        lng: editLng,
+        geometry: JSON.stringify(routeCoordinates),
+        road_name: roadName,
+        city_name: cityName
+      });
     } else {
-        // Forward (A -> B)
-        edits.push({
-            from_node,
-            to_node,
-            speed_kmh: isClosing ? 0 : Math.round(newSpeed * 1.60934),
-            is_closed: isClosing,
-            is_bidirectional: false,
-            reason: `[Forward] ${editReason.trim()}`,
-            lat: editLat,
-            lng: editLng,
-            geometry: JSON.stringify(routeCoordinates),
-            road_name: roadName,
-            city_name: cityName
-        });
-        // Backward (B -> A)
-        edits.push({
-            from_node: [...routeNodes].reverse().join(','),
-            to_node: '',
-            speed_kmh: isBackClosing ? 0 : Math.round(backSpeed * 1.60934),
-            is_closed: isBackClosing,
-            is_bidirectional: false,
-            reason: `[Backward] ${editReason.trim()}`,
-            lat: routeCoordinates[routeCoordinates.length - 1][0],
-            lng: routeCoordinates[routeCoordinates.length - 1][1],
-            geometry: JSON.stringify([...routeCoordinates].reverse()),
-            road_name: roadName,
-            city_name: cityName
-        });
+      edits.push({
+        from_node,
+        to_node,
+        speed_kmh: isClosing ? 0 : Math.round(newSpeed * 1.60934),
+        is_closed: isClosing,
+        is_bidirectional: false,
+        reason: `[Forward] ${editReason.trim()}`,
+        lat: editLat,
+        lng: editLng,
+        geometry: JSON.stringify(routeCoordinates),
+        road_name: roadName,
+        city_name: cityName
+      });
+      edits.push({
+        from_node: [...routeNodes].reverse().join(','),
+        to_node: '',
+        speed_kmh: isBackClosing ? 0 : Math.round(backSpeed * 1.60934),
+        is_closed: isBackClosing,
+        is_bidirectional: false,
+        reason: `[Backward] ${editReason.trim()}`,
+        lat: routeCoordinates[routeCoordinates.length - 1][0],
+        lng: routeCoordinates[routeCoordinates.length - 1][1],
+        geometry: JSON.stringify([...routeCoordinates].reverse()),
+        road_name: roadName,
+        city_name: cityName
+      });
     }
 
     try {
-        for (const payload of edits) {
-            await fetch(`/api/overrides`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-        }
-        showToast("Edit applied! Rebuilding routing graph...");
-        setEditReason('');
-        
-        fetchOverrides();
-        window.dispatchEvent(new Event('edit-applied'));
-        setTimeout(fetchRoute, 3000);
-        
-    } catch (err) {
-        console.error(err);
-        showToast("Failed to save road edit.");
+      for (const payload of edits) {
+        await fetch(`/api/overrides`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+      showToast('Road edit applied! Rebuilding routing graph...');
+      setEditReason('');
+      fetchOverrides();
+      window.dispatchEvent(new Event('edit-applied'));
+      setTimeout(fetchRoute, 3000);
+    } catch {
+      showToast('Failed to apply road edit.');
     }
   };
 
-
-  const handleGoTo = (ov: any) => {
-      if (ov.geometry) {
-          try {
-              const coords = JSON.parse(ov.geometry);
-              setRouteBounds(L.polyline(coords).getBounds());
-          } catch(e) {}
-      } else if (ov.lat && ov.lng) {
-          // Fallback if no geometry
-          setRouteBounds(L.latLngBounds([ov.lat, ov.lng], [ov.lat, ov.lng]));
-      }
-  };
-
-  useEffect(() => {
-    const handleMapGoTo = (e: any) => handleGoTo(e.detail);
-    window.addEventListener('map-goto', handleMapGoTo);
-    return () => window.removeEventListener('map-goto', handleMapGoTo);
-  }, []);
-
   return (
-    <div style={{ height: '100%', width: '100%', position: 'relative' }}>
+    <div style={{ position: 'relative', height: '100%', width: '100%', overflow: 'hidden' }} onClick={() => setContextMenu(null)}>
+      {/* Toast Notification */}
       {toastMessage && (
-          <div className="animate-fade-in" style={{
-              position: 'fixed',
-              top: '20px',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              background: 'rgba(30, 41, 59, 0.95)',
-              backdropFilter: 'blur(10px)',
-              border: '1px solid rgba(255,255,255,0.1)',
-              padding: '12px 24px',
-              borderRadius: 0,
-              color: 'white',
-              fontWeight: 500,
-              zIndex: 9999,
-              boxShadow: '0 4px 30px rgba(0,0,0,0.5)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px'
-          }}>
-              <span style={{ fontSize: '18px' }}>ℹ️</span> {toastMessage}
-          </div>
+        <div
+          className="animate-fade-in"
+          style={{
+            position: 'fixed',
+            top: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'var(--gmaps-bg)',
+            color: 'var(--gmaps-text)',
+            padding: '10px 20px',
+            borderRadius: '24px',
+            boxShadow: 'var(--gmaps-shadow-lg)',
+            border: '1px solid var(--gmaps-border)',
+            fontSize: '13px',
+            fontWeight: 500,
+            zIndex: 99999,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <span style={{ color: 'var(--gmaps-blue)' }}>ℹ️</span> {toastMessage}
+        </div>
       )}
-      
+
+      {/* Route Error Notification */}
       {routeError && (
-          <div className="animate-fade-in" style={{
-              position: 'absolute',
-              top: '80px',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 2000,
-              background: 'rgba(239, 68, 68, 0.95)',
-              color: 'white',
-              padding: '12px 24px',
-              borderRadius: 0,
-              boxShadow: '0 10px 25px rgba(239, 68, 68, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              fontSize: '15px',
-              fontWeight: 500,
-              backdropFilter: 'blur(4px)',
-              border: '1px solid #fca5a5'
-          }}>
-              <span style={{ fontSize: '20px' }}>⚠️</span> {routeError}
-          </div>
+        <div
+          className="animate-fade-in"
+          style={{
+            position: 'absolute',
+            top: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 2000,
+            background: 'var(--gmaps-bg)',
+            color: 'var(--gmaps-red)',
+            padding: '10px 20px',
+            borderRadius: '8px',
+            boxShadow: 'var(--gmaps-shadow-lg)',
+            border: '1px solid var(--gmaps-border)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '13px',
+            fontWeight: 500
+          }}
+        >
+          <span>⚠️</span> {routeError}
+          <button
+            onClick={() => setRouteError(null)}
+            style={{ background: 'transparent', border: 'none', color: 'var(--gmaps-subtext)', cursor: 'pointer', marginLeft: '6px' }}
+          >
+            ✕
+          </button>
+        </div>
       )}
-      <MapContainer 
-        center={marylandCenter} zoom={13} 
+
+      {/* ====================================================================
+          LEAFLET MAP CONTAINER
+          ==================================================================== */}
+      <MapContainer
+        center={defaultCenter}
+        zoom={13}
         style={{ height: '100%', width: '100%', background: 'var(--bg-color)' }}
         zoomControl={false}
       >
-        <LayersControl position="bottomleft">
-          <LayersControl.BaseLayer checked name="OpenStreetMap">
-            <TileLayer
-              attribution='&copy; OpenStreetMap contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-          </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer name="Satellite">
-            <TileLayer
-              attribution='&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
-              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-            />
-          </LayersControl.BaseLayer>
-        </LayersControl>
-        <MapClickHandler onMapClick={handleMapClick} />
+        <MapControllerBridge
+          onMapReady={(map) => { mapInstanceRef.current = map; }}
+          onMapClick={handleMapClick}
+          onContextMenu={handleMapContextMenu}
+        />
         <MapFitter bounds={routeBounds} />
-        
-        {/* Draw active state boundaries */}
-        {selectedState && (
-            <GeoJSON 
-                key={`geojson-${selectedState}`} 
-                data={(usStatesGeoJson as any).features.filter((f: any) => f.properties.name.toLowerCase().replace(/ /g, '-') === selectedState)}
-                style={{ color: '#3b82f6', fillOpacity: 0.05, weight: 2, dashArray: '5, 10' }}
-            />
+
+        {/* Dynamic Base Map Tile Layer */}
+        {mapLayer === 'osm' ? (
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+        ) : (
+          <TileLayer
+            attribution='&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+          />
         )}
-        
-        {startPoint && <Marker position={startPoint} icon={startIcon}><Popup>Start</Popup></Marker>}
-        {endPoint && <Marker position={endPoint} icon={endIcon}><Popup>End</Popup></Marker>}
-        {/* Alternative Routes - Outlines */}
-        {altRoutes.map((alt, i) => (
-            <Polyline key={`alt-out-${i}`} positions={alt.coords} color="#6A7B94" weight={10} opacity={0.8} />
-        ))}
-        {/* Alternative Routes - Inner Fills */}
-        {altRoutes.map((alt, i) => (
-            <Polyline key={`alt-in-${i}`} positions={alt.coords} color="#8AB4F8" weight={6} opacity={1.0}>
-                <Tooltip permanent direction="center" className="alt-route-tooltip">
-                    <div>{alt.duration} min</div>
-                    <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{alt.distance} mi</div>
-                </Tooltip>
+
+        {/* Selected State Boundary Highlight */}
+        {selectedState && (
+          <GeoJSON
+            key={`geojson-${selectedState}`}
+            data={(usStatesGeoJson as any).features.filter((f: any) => f.properties.name.toLowerCase().replace(/ /g, '-') === selectedState)}
+            style={{ color: '#1a73e8', fillOpacity: 0.04, weight: 2, dashArray: '4, 8' }}
+          />
+        )}
+
+        {/* Start Point Marker (Draggable) */}
+        {startPoint && (
+          <Marker
+            position={startPoint}
+            icon={gmapsStartIcon}
+            draggable={true}
+            eventHandlers={{
+              dragend: (e) => handleDragStartMarker(e.target.getLatLng())
+            }}
+          />
+        )}
+
+        {/* Intermediate Stops Markers (Draggable) */}
+        {stops.map((stop, sIdx) =>
+          stop.point ? (
+            <Marker
+              key={stop.id}
+              position={stop.point}
+              icon={createGmapsStopIcon(sIdx + 1)}
+              draggable={true}
+              eventHandlers={{
+                dragend: (e) => updateStopPoint(stop.id, e.target.getLatLng())
+              }}
+            />
+          ) : null
+        )}
+
+        {/* Destination Point Marker (Draggable) */}
+        {endPoint && (
+          <Marker
+            position={endPoint}
+            icon={gmapsEndIcon}
+            draggable={true}
+            eventHandlers={{
+              dragend: (e) => handleDragEndMarker(e.target.getLatLng())
+            }}
+          />
+        )}
+
+        {/* Active Place Marker (Always visible when "What's here?" or search is active) */}
+        {activePlace && (
+          <Marker
+            position={L.latLng(activePlace.lat, activePlace.lng)}
+            icon={gmapsPlaceIcon}
+          />
+        )}
+
+        {/* User GPS Location Marker */}
+        {userLocation && (
+          <Marker position={userLocation} icon={gmapsGpsIcon} />
+        )}
+
+        {/* Alternative Routes (Gray with hover click-to-activate) */}
+        {altRoutes.map((alt) => (
+          <React.Fragment key={`alt-${alt.index}`}>
+            <Polyline
+              positions={alt.coords}
+              color="#5f6368"
+              weight={8}
+              opacity={0.7}
+              eventHandlers={{
+                click: () => applySelectedRoute(allRoutes, alt.index)
+              }}
+            />
+            <Polyline
+              positions={alt.coords}
+              color="#9aa0a6"
+              weight={5}
+              opacity={0.9}
+              eventHandlers={{
+                click: () => applySelectedRoute(allRoutes, alt.index)
+              }}
+            >
+              <Tooltip direction="center" className="alt-route-tooltip">
+                <div>{alt.duration}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{alt.distance}</div>
+              </Tooltip>
             </Polyline>
+          </React.Fragment>
         ))}
 
-        {/* Main Route - Outline */}
-        {routeCoordinates.length > 0 && <Polyline positions={routeCoordinates} color="#1036A3" weight={10} opacity={0.9} />}
-        {/* Main Route - Inner Fill */}
+        {/* Main Route (Iconic Google Blue) */}
         {routeCoordinates.length > 0 && (
-            <Polyline positions={routeCoordinates} color="#1A73E8" weight={6} opacity={1.0}>
-                {mainRouteInfo && (
-                    <Tooltip permanent direction="center" className="main-route-tooltip">
-                        <div>{mainRouteInfo.duration} min</div>
-                        <div style={{ fontSize: '10px', opacity: 0.8 }}>{mainRouteInfo.distance} mi</div>
-                    </Tooltip>
-                )}
+          <>
+            <Polyline positions={routeCoordinates} color="#1558d6" weight={9} opacity={0.85} />
+            <Polyline positions={routeCoordinates} color="#1a73e8" weight={6} opacity={1.0}>
+              {mainRouteInfo && (
+                <Tooltip permanent direction="center" className="main-route-tooltip">
+                  <div>{mainRouteInfo.duration}</div>
+                  <div style={{ fontSize: '10px', opacity: 0.85 }}>{mainRouteInfo.distance}</div>
+                </Tooltip>
+              )}
             </Polyline>
+          </>
         )}
-        
-        {/* Draw all active overrides on the map! */}
-        {activeOverrides.map(ov => {
-            if (ov.geometry) {
-                try {
-                    const coords = JSON.parse(ov.geometry);
-                    const color = ov.is_closed ? '#ef4444' : '#f59e0b'; // Red for closed, Orange for speed change
-                    return <Polyline key={ov.id} positions={coords} color={color} weight={8} opacity={0.9} dashArray="10, 10" />;
-                } catch(e) {
-                    return null;
-                }
+
+        {/* Road Editor Overrides Display */}
+        {activeOverrides.map((ov) => {
+          if (ov.geometry) {
+            try {
+              const coords = JSON.parse(ov.geometry);
+              const color = ov.is_closed ? '#ea4335' : '#fbbc04';
+              return <Polyline key={ov.id} positions={coords} color={color} weight={7} opacity={0.85} dashArray="8, 8" />;
+            } catch {
+              return null;
             }
-            return null;
+          }
+          return null;
         })}
       </MapContainer>
-      
-      {/* Modern Routing Input Panel */}
-      <div className="glass-panel animate-fade-in" style={{
-        position: 'absolute',
-        top: '20px', left: '20px',
-        zIndex: 1000,
-        width: '340px',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '16px',
-        gap: '12px'
-      }}>
-        {/* Active States Dropdown */}
-        {activeStates.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, border: '1px solid var(--input-border)', padding: '6px 12px' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px' }}>Jump to Map:</span>
-                <select 
-                    style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontSize: '13px', cursor: 'pointer' }}
-                    value={selectedState}
-                    onChange={(e) => {
-                        const state = e.target.value;
-                        setSelectedState(state);
-                        if (state) {
-                            const boundsData = (stateBounds as any)[state];
-                            if (boundsData) {
-                                setRouteBounds(L.latLngBounds([
-                                    [boundsData[0][0], boundsData[0][1]], 
-                                    [boundsData[1][0], boundsData[1][1]]
-                                ]));
-                            }
-                        }
-                    }}
-                >
-                    {activeStates.map(st => (
-                        <option key={st} value={st} style={{ color: '#000' }}>
-                            {st.charAt(0).toUpperCase() + st.slice(1).replace('-', ' ')}
-                        </option>
-                    ))}
-                </select>
+
+      {/* ====================================================================
+          TOP-LEFT FLOATING GOOGLE MAPS PANEL (SEARCH & DIRECTIONS)
+          ==================================================================== */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '16px',
+          left: '16px',
+          zIndex: 1000,
+          width: '392px',
+          maxWidth: 'calc(100vw - 32px)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px'
+        }}
+      >
+        {panelMode === 'search' ? (
+          /* Search Bar Mode */
+          <div className="gmaps-card" style={{ padding: '4px 8px 4px 14px', display: 'flex', alignItems: 'center', height: '48px' }}>
+            <Search size={20} color="var(--gmaps-subtext)" style={{ flexShrink: 0, marginRight: '10px' }} />
+            <input
+              type="text"
+              placeholder="Search Google Maps or type address..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => setActiveInputFocus('search')}
+              style={{
+                flex: 1,
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                color: 'var(--gmaps-text)',
+                fontSize: '15px',
+                fontFamily: 'Inter, sans-serif'
+              }}
+            />
+
+            {isSearching && (
+              <div
+                style={{
+                  width: '14px',
+                  height: '14px',
+                  borderRadius: '50%',
+                  border: '2px solid var(--gmaps-blue)',
+                  borderTopColor: 'transparent',
+                  animation: 'spin 0.8s linear infinite',
+                  marginRight: '6px'
+                }}
+              />
+            )}
+
+            {searchQuery && (
+              <button
+                className="gmaps-icon-btn"
+                style={{ width: '32px', height: '32px', marginRight: '6px' }}
+                onClick={() => {
+                  setSearchQuery('');
+                  setSearchResults([]);
+                  setActivePlace(null);
+                }}
+                title="Clear search"
+              >
+                <X size={18} />
+              </button>
+            )}
+
+            <div style={{ width: '1px', height: '24px', background: 'var(--gmaps-border)', margin: '0 8px' }} />
+
+            {/* Google Maps Blue Directions Button */}
+            <button
+              className="gmaps-btn-directions"
+              onClick={() => {
+                setPanelMode('directions');
+                if (activePlace && !endPoint) {
+                  setEndPoint(L.latLng(activePlace.lat, activePlace.lng));
+                  setEndInputText(activePlace.title || activePlace.subtitle);
+                }
+              }}
+              title="Directions"
+            >
+              <Navigation size={18} fill="#ffffff" />
+            </button>
+          </div>
+        ) : (
+          /* Directions Mode */
+          <div className="gmaps-card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* Directions Header with Mode Tabs & Clear All */}
+            <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--gmaps-border)', padding: '4px 8px' }}>
+              <button
+                className="gmaps-icon-btn"
+                style={{ width: '36px', height: '36px', marginRight: '8px' }}
+                onClick={() => {
+                  setPanelMode('search');
+                  setStartSuggestions([]);
+                  setEndSuggestions([]);
+                  setStopSuggestions([]);
+                }}
+                title="Back to search"
+              >
+                <ArrowLeft size={18} />
+              </button>
+
+              <div style={{ display: 'flex', gap: '4px', flex: 1 }}>
                 <button
-                    onClick={() => {
-                        if (selectedState) {
-                            const boundsData = (stateBounds as any)[selectedState];
-                            if (boundsData) {
-                                setRouteBounds(L.latLngBounds([
-                                    [boundsData[0][0], boundsData[0][1]], 
-                                    [boundsData[1][0], boundsData[1][1]]
-                                ]));
-                            }
-                        }
+                  className={`gmaps-mode-tab ${profile === 'car' ? 'active' : ''}`}
+                  onClick={() => setProfile('car')}
+                  title="Driving mode"
+                >
+                  <Car size={16} />
+                  <span>Driving</span>
+                </button>
+                <button
+                  className={`gmaps-mode-tab ${profile === 'foot' ? 'active' : ''}`}
+                  onClick={() => setProfile('foot')}
+                  title="Walking mode"
+                >
+                  <Footprints size={16} />
+                  <span>Walking</span>
+                </button>
+              </div>
+
+              {(startPoint || endPoint || stops.length > 0 || routeCoordinates.length > 0) && (
+                <button
+                  className="gmaps-icon-btn"
+                  style={{ width: '36px', height: '36px', color: 'var(--gmaps-red)' }}
+                  onClick={clearAllPinsAndRoute}
+                  title="Clear all points and routes"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+
+              <button
+                className="gmaps-icon-btn"
+                style={{ width: '36px', height: '36px' }}
+                onClick={() => setShowOptionsBar(!showOptionsBar)}
+                title="Route options"
+              >
+                <Sliders size={16} />
+              </button>
+            </div>
+
+            {/* Origin, Stops & Destination Inputs with Google Maps Connection Line */}
+            <div style={{ position: 'relative', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {/* Dotted vertical connector line */}
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '23px',
+                  top: '26px',
+                  bottom: '50px',
+                  width: '2px',
+                  borderLeft: '2px dotted var(--gmaps-subtext)',
+                  zIndex: 0
+                }}
+              />
+
+              {/* Start Point Input Row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative', zIndex: 1 }}>
+                <div
+                  style={{
+                    width: '14px',
+                    height: '14px',
+                    borderRadius: '50%',
+                    border: '3px solid #188038',
+                    background: 'var(--gmaps-bg)',
+                    flexShrink: 0
+                  }}
+                />
+                <div className="gmaps-input-container" style={{ flex: 1, height: '36px', padding: '0 8px' }}>
+                  <input
+                    type="text"
+                    placeholder="Choose starting point, or click map..."
+                    value={startInputText}
+                    onChange={(e) => setStartInputText(e.target.value)}
+                    onFocus={() => setActiveInputFocus('start')}
+                    style={{
+                      flex: 1,
+                      background: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      color: 'var(--gmaps-text)',
+                      fontSize: '13px'
                     }}
-                    style={{ background: 'transparent', border: '1px solid var(--input-border)', color: 'var(--text-primary)', cursor: 'pointer', padding: '4px 8px', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: '8px', fontSize: '11px', fontWeight: 600 }}
-                    title={`Jump to ${selectedState}`}
-                >
-                    <Map size={14} style={{ marginRight: '4px' }} /> Go
-                </button>
-            </div>
-        )}
-        
-        {/* Start Input */}
-        <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, border: '1px solid var(--input-border)', padding: '4px 12px' }}>
-            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 8px #22c55e', marginRight: '8px' }}></div>
-            <input 
-                type="text" 
-                placeholder="Start - click map or type lat, lng" 
-                value={startInputText}
-                onChange={(e) => setStartInputText(e.target.value)}
-                onBlur={() => {
-                    const parts = startInputText.split(',').map(p => parseFloat(p.trim()));
-                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                        setStartPoint(L.latLng(parts[0], parts[1]));
-                        if (startPoint && endPoint) setEndPoint(null); // Optional: clear end if we're resetting start
-                    } else if (!startInputText.trim()) {
+                  />
+                  {startInputText && (
+                    <button
+                      className="gmaps-icon-btn"
+                      style={{ width: '22px', height: '22px' }}
+                      onClick={() => {
                         setStartPoint(null);
-                    }
-                }}
-                onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.currentTarget.blur();
-                }}
-                style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
-            />
-            {startPoint && (
-                <div style={{ display: 'flex', gap: '4px' }}>
-                    <button 
-                        onClick={() => {
-                            navigator.clipboard.writeText(startInputText);
-                            setCopiedStart(true);
-                            setTimeout(() => setCopiedStart(false), 2000);
-                        }} 
-                        style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                        title="Copy coordinates"
-                    >
-                        {copiedStart ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
-                    </button>
-                    <button onClick={() => { setStartPoint(null); setRouteCoordinates([]); setAltRoutes([]); setDistance(''); setRouteSteps([]); setShowSteps(false); setRouteError(null); }} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', fontSize: '14px' }}>✕</button>
-                </div>
-            )}
-        </div>
-        
-        {/* End Input */}
-        <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, border: '1px solid var(--input-border)', padding: '4px 12px' }}>
-            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444', boxShadow: '0 0 8px #ef4444', marginRight: '8px' }}></div>
-            <input 
-                type="text" 
-                placeholder="End - click map or type lat, lng" 
-                value={endInputText}
-                onChange={(e) => setEndInputText(e.target.value)}
-                onBlur={() => {
-                    const parts = endInputText.split(',').map(p => parseFloat(p.trim()));
-                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                        setEndPoint(L.latLng(parts[0], parts[1]));
-                    } else if (!endInputText.trim()) {
-                        setEndPoint(null);
-                    }
-                }}
-                onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.currentTarget.blur();
-                }}
-                style={{ flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: 'var(--text-primary)', outline: 'none', fontSize: '13px' }}
-            />
-            {endPoint && (
-                <div style={{ display: 'flex', gap: '4px' }}>
-                    <button 
-                        onClick={() => {
-                            navigator.clipboard.writeText(endInputText);
-                            setCopiedEnd(true);
-                            setTimeout(() => setCopiedEnd(false), 2000);
-                        }} 
-                        style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                        title="Copy coordinates"
-                    >
-                        {copiedEnd ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
-                    </button>
-                    <button onClick={() => { setEndPoint(null); setRouteCoordinates([]); setAltRoutes([]); setDistance(''); setRouteSteps([]); setShowSteps(false); setRouteError(null); }} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px', cursor: 'pointer', fontSize: '14px' }}>✕</button>
-                </div>
-            )}
-        </div>
-
-        {/* Controls Row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-            {/* Profile Toggle */}
-            <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)' }}>
-                <button 
-                    onClick={() => setProfile('car')}
-                    style={{ padding: '6px 14px', borderRadius: 0, border: 'none', background: profile === 'car' ? '#3b82f6' : 'transparent', color: profile === 'car' ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: profile === 'car' ? 600 : 500, transition: 'all 0.2s', boxShadow: profile === 'car' ? '0 2px 10px rgba(59,130,246,0.3)' : 'none' }}
-                >Car</button>
-                <button 
-                    onClick={() => setProfile('foot')}
-                    style={{ padding: '6px 14px', borderRadius: 0, border: 'none', background: profile === 'foot' ? '#10b981' : 'transparent', color: profile === 'foot' ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: profile === 'foot' ? 600 : 500, transition: 'all 0.2s', boxShadow: profile === 'foot' ? '0 2px 10px rgba(16,185,129,0.3)' : 'none' }}
-                >Foot</button>
-            </div>
-
-            {/* Preference Toggle */}
-            <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)' }}>
-                <button 
-                    onClick={() => setRoutePreference('fastest')}
-                    style={{ padding: '6px 14px', borderRadius: 0, border: 'none', background: routePreference === 'fastest' ? '#3b82f6' : 'transparent', color: routePreference === 'fastest' ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: routePreference === 'fastest' ? 600 : 500, transition: 'all 0.2s', boxShadow: routePreference === 'fastest' ? '0 2px 10px rgba(59,130,246,0.3)' : 'none' }}
-                >Fastest</button>
-                <button 
-                    onClick={() => setRoutePreference('shortest')}
-                    style={{ padding: '6px 14px', borderRadius: 0, border: 'none', background: routePreference === 'shortest' ? '#10b981' : 'transparent', color: routePreference === 'shortest' ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: routePreference === 'shortest' ? 600 : 500, transition: 'all 0.2s', boxShadow: routePreference === 'shortest' ? '0 2px 10px rgba(16,185,129,0.3)' : 'none' }}
-                >Shortest</button>
-            </div>
-
-            {/* Options Toggle */}
-            <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)' }}>
-                 {profile === 'car' && (
-                    <button 
-                        onClick={() => setAvoidTolls(!avoidTolls)}
-                        style={{ padding: '6px 10px', borderRadius: 0, border: 'none', background: avoidTolls ? 'var(--divider-bg)' : 'transparent', color: avoidTolls ? 'var(--text-primary)' : 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'all 0.2s' }}
-                    >No Tolls</button>
-                )}
-                <button 
-                    onClick={() => setShowAlternatives(!showAlternatives)}
-                    style={{ padding: '6px 10px', borderRadius: 0, border: 'none', background: showAlternatives ? 'var(--divider-bg)' : 'transparent', color: showAlternatives ? 'var(--text-primary)' : 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'all 0.2s' }}
-                >Alts</button>
-            </div>
-
-            <div style={{ display: 'flex', gap: '4px' }}>
-                <button 
-                    onClick={() => {
-                        const temp = startPoint;
-                        setStartPoint(endPoint);
-                        setEndPoint(temp);
-                    }} 
-                    style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: 'var(--text-primary)', padding: '6px 10px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }}
-                    title="Swap Start and End"
-                    onMouseOver={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
-                    onMouseOut={(e) => e.currentTarget.style.background = 'var(--input-bg)'}
-                >
-                    ⇅
-                </button>
-
-                <button 
-                    onClick={() => {
-                        setStartPoint(null);
-                        setEndPoint(null);
+                        setStartInputText('');
                         setRouteCoordinates([]);
                         setAltRoutes([]);
-                        setDistance('');
                         setMainRouteInfo(null);
-                        setRouteNodes([]);
-                        setRouteSteps([]);
-                        setShowSteps(false);
-                        setRouteError(null);
-                        setIsSameRoad(true);
-                        setRoadName('');
-                        setIsBidirectional(true);
-                    }} 
-                    style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: '#ef4444', padding: '6px 12px', borderRadius: 0, cursor: 'pointer', fontSize: '12px', fontWeight: 600, transition: 'all 0.2s' }}
-                    title="Clear Route"
-                    onMouseOver={(e) => e.currentTarget.style.background = 'rgba(239,68,68,0.2)'}
-                    onMouseOut={(e) => e.currentTarget.style.background = 'var(--input-bg)'}
-                >
-                    Clear
-                </button>
-            </div>
-        </div>
-        
-        {/* Route Summary */}
-        {!routeError && distance && (
-            <div style={{ background: 'var(--panel-inner-bg)', padding: '12px', borderRadius: 0, border: '1px solid var(--input-border)', display: 'flex', flexDirection: 'column' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>{distance}</span>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                        <button 
-                            onClick={() => setShowRawJson(true)} 
-                            style={{ background: 'var(--divider-bg)', border: 'none', color: 'var(--text-primary)', padding: '4px 10px', borderRadius: 0, fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'background 0.2s' }}
-                            onMouseOver={(e) => e.currentTarget.style.background = 'var(--panel-border)'}
-                            onMouseOut={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
-                        >
-                            JSON
-                        </button>
-                        <button 
-                            onClick={() => setShowSteps(!showSteps)} 
-                            style={{ background: 'var(--divider-bg)', border: 'none', color: 'var(--text-primary)', padding: '4px 10px', borderRadius: 0, fontSize: '11px', cursor: 'pointer', fontWeight: 500, transition: 'background 0.2s' }}
-                            onMouseOver={(e) => e.currentTarget.style.background = 'var(--panel-border)'}
-                            onMouseOut={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
-                        >
-                            {showSteps ? 'Hide Navigation' : 'Turn-by-turn'}
-                        </button>
-                    </div>
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
                 </div>
-                
-                {showSteps && routeSteps.length > 0 && (
-                    <div className="custom-scrollbar" style={{ marginTop: '12px', maxHeight: '250px', overflowY: 'auto', borderTop: '1px solid var(--input-border)', paddingTop: '8px', paddingRight: '4px' }}>
-                        {routeSteps.map((step, idx) => {
-                            if (step.maneuver.type === 'arrive') {
-                                return <div key={idx} style={{ padding: '8px 0', fontSize: '13px', color: '#10b981', fontWeight: 600 }}>🏁 Arrive at destination</div>;
-                            }
-                            
-                            const distStr = step.distance < 160.9 ? `${Math.round(step.distance * 3.28084)} ft` : `${(step.distance / 1609.34).toFixed(2)} mi`;
-                            
-                            return (
-                                <div key={idx} style={{ padding: '8px 0', borderBottom: '1px solid var(--input-border)', fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                    <span style={{ flex: 1, paddingRight: '12px', lineHeight: '1.4' }}>
-                                        <strong style={{ color: 'var(--text-primary)', textTransform: 'capitalize' }}>
-                                            {step.maneuver.type.replace('-', ' ')} {step.maneuver.modifier ? step.maneuver.modifier.replace('-', ' ') : ''}
-                                        </strong>
-                                        {step.name ? ` onto ${step.name}` : ''}
-                                    </span>
-                                    {step.distance > 0 && <span style={{ color: '#64748b', whiteSpace: 'nowrap', paddingTop: '1px' }}>{distStr}</span>}
-                                </div>
-                            );
-                        })}
-                    </div>
-                )}
+              </div>
+
+              {/* Intermediate Stops Rows */}
+              {stops.map((stop, sIdx) => (
+                <div key={stop.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative', zIndex: 1 }}>
+                  <div
+                    style={{
+                      width: '14px',
+                      height: '14px',
+                      borderRadius: '50%',
+                      border: '3px solid #1a73e8',
+                      background: 'var(--gmaps-bg)',
+                      flexShrink: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  />
+                  <div className="gmaps-input-container" style={{ flex: 1, height: '36px', padding: '0 8px' }}>
+                    <input
+                      type="text"
+                      placeholder={`Stop ${sIdx + 1} - click map or type address...`}
+                      value={stop.text}
+                      onChange={(e) => updateStopText(stop.id, e.target.value)}
+                      onFocus={() => setActiveInputFocus(stop.id)}
+                      style={{
+                        flex: 1,
+                        background: 'transparent',
+                        border: 'none',
+                        outline: 'none',
+                        color: 'var(--gmaps-text)',
+                        fontSize: '13px'
+                      }}
+                    />
+                    <button
+                      className="gmaps-icon-btn"
+                      style={{ width: '22px', height: '22px' }}
+                      onClick={() => removeDestinationStop(stop.id)}
+                      title="Remove this stop"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Destination Point Input Row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative', zIndex: 1 }}>
+                <MapPin size={16} color="#ea4335" style={{ flexShrink: 0 }} />
+                <div className="gmaps-input-container" style={{ flex: 1, height: '36px', padding: '0 8px' }}>
+                  <input
+                    type="text"
+                    placeholder="Choose destination, or click map..."
+                    value={endInputText}
+                    onChange={(e) => setEndInputText(e.target.value)}
+                    onFocus={() => setActiveInputFocus('end')}
+                    style={{
+                      flex: 1,
+                      background: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      color: 'var(--gmaps-text)',
+                      fontSize: '13px'
+                    }}
+                  />
+                  {endInputText && (
+                    <button
+                      className="gmaps-icon-btn"
+                      style={{ width: '22px', height: '22px' }}
+                      onClick={() => {
+                        setEndPoint(null);
+                        setEndInputText('');
+                        setRouteCoordinates([]);
+                        setAltRoutes([]);
+                        setMainRouteInfo(null);
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Swap Origin & Destination Button */}
+                <button
+                  className="gmaps-icon-btn"
+                  style={{ width: '32px', height: '32px', border: '1px solid var(--gmaps-border)', borderRadius: '50%' }}
+                  onClick={() => {
+                    const tempPt = startPoint;
+                    const tempText = startInputText;
+                    setStartPoint(endPoint);
+                    setStartInputText(endInputText);
+                    setEndPoint(tempPt);
+                    setEndInputText(tempText);
+                  }}
+                  title="Reverse start and destination"
+                >
+                  <ArrowUpDown size={15} />
+                </button>
+              </div>
+
+              {/* + Add Destination Button (Google Maps Style) */}
+              <div style={{ display: 'flex', alignItems: 'center', marginLeft: '24px', marginTop: '2px' }}>
+                <button
+                  onClick={addDestinationStop}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--gmaps-subtext)',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    transition: 'color 0.15s ease'
+                  }}
+                  onMouseOver={(e) => (e.currentTarget.style.color = 'var(--gmaps-blue)')}
+                  onMouseOut={(e) => (e.currentTarget.style.color = 'var(--gmaps-subtext)')}
+                >
+                  <Plus size={15} />
+                  <span>Add destination</span>
+                </button>
+              </div>
+
+              {/* Expandable Route Options */}
+              {showOptionsBar && (
+                <div
+                  className="animate-fade-in"
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '6px',
+                    paddingTop: '8px',
+                    borderTop: '1px solid var(--gmaps-border)',
+                    marginTop: '2px'
+                  }}
+                >
+                  <button
+                    onClick={() => setRoutePreference(routePreference === 'fastest' ? 'shortest' : 'fastest')}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: '16px',
+                      border: '1px solid var(--gmaps-border)',
+                      background: routePreference === 'fastest' ? 'var(--gmaps-active)' : 'transparent',
+                      color: routePreference === 'fastest' ? 'var(--gmaps-blue)' : 'var(--gmaps-subtext)',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Preference: {routePreference === 'fastest' ? '⚡ Fastest' : '📏 Shortest'}
+                  </button>
+
+                  {profile === 'car' && (
+                    <button
+                      onClick={() => setAvoidTolls(!avoidTolls)}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '16px',
+                        border: '1px solid var(--gmaps-border)',
+                        background: avoidTolls ? 'var(--gmaps-active)' : 'transparent',
+                        color: avoidTolls ? 'var(--gmaps-blue)' : 'var(--gmaps-subtext)',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {avoidTolls ? '✓ Avoid Tolls' : 'Avoid Tolls'}
+                    </button>
+                  )}
+
+                  {stops.length === 0 && (
+                    <button
+                      onClick={() => setShowAlternatives(!showAlternatives)}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '16px',
+                        border: '1px solid var(--gmaps-border)',
+                        background: showAlternatives ? 'var(--gmaps-active)' : 'transparent',
+                        color: showAlternatives ? 'var(--gmaps-blue)' : 'var(--gmaps-subtext)',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {showAlternatives ? '✓ Alternatives' : 'Alternatives'}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
+
+            {/* Route Cards & Results */}
+            {mainRouteInfo && !routeError && (
+              <div
+                style={{
+                  borderTop: '1px solid var(--gmaps-border)',
+                  background: 'var(--gmaps-panel-bg)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  maxHeight: '420px',
+                  overflowY: 'auto'
+                }}
+                className="custom-scrollbar"
+              >
+                {/* Primary Route Card */}
+                <div
+                  className={`gmaps-route-card ${selectedRouteIndex === 0 ? 'selected' : ''}`}
+                  style={{ margin: '8px 12px 4px 12px' }}
+                  onClick={() => applySelectedRoute(allRoutes, 0)}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                        <span style={{ fontSize: '20px', fontWeight: 700, color: 'var(--gmaps-green)' }}>
+                          {mainRouteInfo.duration}
+                        </span>
+                        <span style={{ fontSize: '13px', color: 'var(--gmaps-subtext)' }}>
+                          ({mainRouteInfo.distance})
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--gmaps-text)', marginTop: '2px', fontWeight: 500 }}>
+                        {stops.length > 0 ? `${stops.length + 1} legs route` : 'Fastest route'} &bull; via {mainRouteInfo.via}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowSteps(!showSteps);
+                      }}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '16px',
+                        border: '1px solid var(--gmaps-border)',
+                        background: showSteps ? 'var(--gmaps-blue)' : 'transparent',
+                        color: showSteps ? '#ffffff' : 'var(--gmaps-text)',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      {showSteps ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                      Details
+                    </button>
+                  </div>
+                </div>
+
+                {/* Alternative Routes Cards (shown when no intermediate stops) */}
+                {stops.length === 0 && altRoutes.map((alt) => (
+                  <div
+                    key={`card-alt-${alt.index}`}
+                    className={`gmaps-route-card ${selectedRouteIndex === alt.index ? 'selected' : ''}`}
+                    style={{ margin: '4px 12px' }}
+                    onClick={() => applySelectedRoute(allRoutes, alt.index)}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                          <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--gmaps-text)' }}>
+                            {alt.duration}
+                          </span>
+                          <span style={{ fontSize: '12px', color: 'var(--gmaps-subtext)' }}>
+                            ({alt.distance})
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', marginTop: '1px' }}>
+                          via {alt.via}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: '11px', color: 'var(--gmaps-blue)', fontWeight: 600 }}>Select</span>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Turn-by-Turn Navigation List */}
+                {showSteps && routeSteps.length > 0 && (
+                  <div style={{ padding: '8px 14px', borderTop: '1px solid var(--gmaps-border)', marginTop: '6px' }}>
+                    <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--gmaps-subtext)', marginBottom: '8px' }}>
+                      Turn-by-turn directions
+                    </div>
+                    {routeSteps.map((step, idx) => {
+                      const distStr = step.distance < 160.9 ? `${Math.round(step.distance * 3.28084)} ft` : `${(step.distance / 1609.34).toFixed(1)} mi`;
+                      const isArrive = step.maneuver.type === 'arrive';
+                      const isDepart = step.maneuver.type === 'depart';
+                      const modifier = step.maneuver.modifier || '';
+
+                      return (
+                        <div
+                          key={`step-${idx}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '12px',
+                            padding: '8px 0',
+                            borderBottom: idx < routeSteps.length - 1 ? '1px solid var(--gmaps-border)' : 'none'
+                          }}
+                        >
+                          <div style={{ color: isArrive ? '#ea4335' : 'var(--gmaps-blue)', marginTop: '2px' }}>
+                            {isArrive ? (
+                              <MapPin size={16} />
+                            ) : modifier.includes('left') ? (
+                              <CornerUpLeft size={16} />
+                            ) : modifier.includes('right') ? (
+                              <CornerUpRight size={16} />
+                            ) : modifier.includes('uturn') ? (
+                              <RotateCcw size={16} />
+                            ) : (
+                              <ArrowUp size={16} />
+                            )}
+                          </div>
+                          <div style={{ flex: 1, fontSize: '12px', color: 'var(--gmaps-text)', lineHeight: 1.4 }}>
+                            {isArrive ? (
+                              <strong>Arrive at destination</strong>
+                            ) : isDepart ? (
+                              <span>Head {modifier || 'forward'} on <strong>{step.name || 'road'}</strong></span>
+                            ) : (
+                              <span>
+                                {step.maneuver.type.replace('-', ' ')} {modifier ? modifier.replace('-', ' ') : ''}
+                                {step.name ? ` onto ${step.name}` : ''}
+                              </span>
+                            )}
+                          </div>
+                          {step.distance > 0 && (
+                            <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', whiteSpace: 'nowrap' }}>
+                              {distStr}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Route Actions Bar */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    borderTop: '1px solid var(--gmaps-border)',
+                    background: 'var(--gmaps-bg)'
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => setShowRawJson(true)}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '4px',
+                        border: '1px solid var(--gmaps-border)',
+                        background: 'transparent',
+                        color: 'var(--gmaps-text)',
+                        fontSize: '11px',
+                        cursor: 'pointer',
+                        fontWeight: 500
+                      }}
+                    >
+                      JSON
+                    </button>
+                    {isSameRoad && profile === 'car' && (
+                      <button
+                        onClick={() => setIsToolsOpen(true)}
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: '4px',
+                          border: 'none',
+                          background: 'var(--gmaps-blue)',
+                          color: '#ffffff',
+                          fontSize: '11px',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <Wrench size={12} /> Edit Road
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={clearAllPinsAndRoute}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--gmaps-red)',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <Trash2 size={13} /> Clear route
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Autocomplete Dropdown List */}
+        {((panelMode === 'search' && searchResults.length > 0) ||
+          (activeInputFocus === 'start' && startSuggestions.length > 0) ||
+          (activeInputFocus === 'end' && endSuggestions.length > 0) ||
+          (activeInputFocus?.startsWith('stop-') && stopSuggestions.length > 0)) && (
+          <div
+            className="gmaps-card animate-fade-in"
+            style={{
+              padding: '6px 0',
+              maxHeight: '280px',
+              overflowY: 'auto'
+            }}
+          >
+            {(activeInputFocus === 'start'
+              ? startSuggestions
+              : activeInputFocus === 'end'
+              ? endSuggestions
+              : activeInputFocus?.startsWith('stop-')
+              ? stopSuggestions
+              : searchResults
+            ).map((item) => (
+              <div
+                key={item.id}
+                className="gmaps-dropdown-item"
+                onClick={() => {
+                  const pt = L.latLng(item.lat, item.lng);
+                  if (activeInputFocus === 'start') {
+                    setStartPoint(pt);
+                    setStartInputText(item.title);
+                    setStartSuggestions([]);
+                  } else if (activeInputFocus === 'end') {
+                    setEndPoint(pt);
+                    setEndInputText(item.title);
+                    setEndSuggestions([]);
+                  } else if (activeInputFocus?.startsWith('stop-')) {
+                    updateStopPoint(activeInputFocus, pt, item.title);
+                    setStopSuggestions([]);
+                  } else {
+                    // Search bar selection
+                    setActivePlace(item);
+                    setSearchResults([]);
+                    if (mapInstanceRef.current) {
+                      mapInstanceRef.current.flyTo(pt, 14, { duration: 1.2 });
+                    }
+                  }
+                  setActiveInputFocus(null);
+                }}
+              >
+                <MapPin size={18} color="var(--gmaps-subtext)" style={{ flexShrink: 0, marginTop: '2px' }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--gmaps-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.title}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.subtitle}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
-
-
-      {/* Editor Panel */}
-      {routeCoordinates.length > 0 && profile === 'car' && isSameRoad && (
-          <div className="glass-panel animate-fade-in" style={{
-              position: 'absolute', bottom: '30px', right: '20px',
-              zIndex: 1000, padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px',
-              alignItems: 'stretch',
-              width: '320px', maxWidth: 'calc(100vw - 40px)'
-          }}>
-              {/* Header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 10px #10b981' }}></div>
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: '13px', letterSpacing: '0.5px' }}>ROAD EDITOR</span>
+      {/* ====================================================================
+          FLOATING GOOGLE MAPS PLACE CARD ("WHAT'S HERE?" OR SEARCH SELECTION)
+          Appears floating over bottom-center of map in any mode
+          ==================================================================== */}
+      {activePlace && (
+        <div
+          className="gmaps-card animate-fade-in"
+          style={{
+            position: 'absolute',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1001,
+            minWidth: '320px',
+            maxWidth: 'calc(100vw - 48px)',
+            padding: '14px 18px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            boxShadow: 'var(--gmaps-shadow-lg)'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <MapPin size={22} color="#ea4335" style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--gmaps-text)' }}>
+                  {activePlace.title}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--gmaps-subtext)', marginTop: '2px' }}>
+                  {activePlace.subtitle}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', marginTop: '2px', opacity: 0.85 }}>
+                  {activePlace.lat.toFixed(5)}, {activePlace.lng.toFixed(5)}
+                </div>
               </div>
-              
-              <div style={{ height: '1px', width: '100%', background: 'var(--divider-bg)' }}></div>
-
-              <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)' }}>
-                  <button 
-                      onClick={() => setIsBidirectional(true)}
-                      style={{ flex: 1, padding: '8px 0', borderRadius: 0, border: 'none', background: isBidirectional ? '#6366f1' : 'transparent', color: isBidirectional ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: isBidirectional ? 600 : 500, transition: 'all 0.2s', boxShadow: isBidirectional ? '0 2px 10px rgba(99,102,241,0.3)' : 'none' }}
-                  >Same Both Ways</button>
-                  <button 
-                      onClick={() => setIsBidirectional(false)}
-                      style={{ flex: 1, padding: '8px 0', borderRadius: 0, border: 'none', background: !isBidirectional ? '#6366f1' : 'transparent', color: !isBidirectional ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: !isBidirectional ? 600 : 500, transition: 'all 0.2s', boxShadow: !isBidirectional ? '0 2px 10px rgba(99,102,241,0.3)' : 'none' }}
-                  >Independent</button>
-              </div>
-
-              {/* Forward Direction */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', background: 'var(--panel-inner-bg)', borderRadius: 0, border: '1px solid var(--input-border)' }}>
-                  {!isBidirectional && <span style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 600 }}>Direction: A &rarr; B</span>}
-                  
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>Speed Limit</span>
-                      <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, padding: '6px 12px', opacity: isClosing ? 0.5 : 1, border: '1px solid var(--input-border)' }}>
-                          <input type="number" value={newSpeed} onChange={(e) => setNewSpeed(Number(e.target.value))} disabled={isClosing} style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '14px', fontWeight: 600, outline: 'none', textAlign: 'center' }} />
-                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginLeft: '4px', fontWeight: 500 }}>mph</span>
-                      </div>
-                  </div>
-                  
-                  <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)' }}>
-                      <button onClick={() => setIsClosing(false)} style={{ flex: 1, padding: '8px 0', borderRadius: 0, border: 'none', background: !isClosing ? '#3b82f6' : 'transparent', color: !isClosing ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: !isClosing ? 600 : 500 }}>Open</button>
-                      <button onClick={() => setIsClosing(true)} style={{ flex: 1, padding: '8px 0', borderRadius: 0, border: 'none', background: isClosing ? '#ef4444' : 'transparent', color: isClosing ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: isClosing ? 600 : 500 }}>Closed</button>
-                  </div>
-              </div>
-
-              {/* Backward Direction */}
-              {!isBidirectional && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', background: 'var(--panel-inner-bg)', borderRadius: 0, border: '1px solid var(--input-border)' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 600 }}>Direction: B &rarr; A</span>
-                  
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>Speed Limit</span>
-                      <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, padding: '6px 12px', opacity: isBackClosing ? 0.5 : 1, border: '1px solid var(--input-border)' }}>
-                          <input type="number" value={backSpeed} onChange={(e) => setBackSpeed(Number(e.target.value))} disabled={isBackClosing} style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '14px', fontWeight: 600, outline: 'none', textAlign: 'center' }} />
-                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginLeft: '4px', fontWeight: 500 }}>mph</span>
-                      </div>
-                  </div>
-                  
-                  <div style={{ display: 'flex', background: 'var(--input-bg)', borderRadius: 0, padding: '4px', border: '1px solid var(--input-border)' }}>
-                      <button onClick={() => setIsBackClosing(false)} style={{ flex: 1, padding: '8px 0', borderRadius: 0, border: 'none', background: !isBackClosing ? '#3b82f6' : 'transparent', color: !isBackClosing ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: !isBackClosing ? 600 : 500 }}>Open</button>
-                      <button onClick={() => setIsBackClosing(true)} style={{ flex: 1, padding: '8px 0', borderRadius: 0, border: 'none', background: isBackClosing ? '#ef4444' : 'transparent', color: isBackClosing ? 'white' : 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', fontWeight: isBackClosing ? 600 : 500 }}>Closed</button>
-                  </div>
-              </div>
-              )}
-
-              {/* City Name Input */}
-              <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, padding: '8px 12px', border: '1px solid var(--input-border)' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px', minWidth: '80px' }}>City Name:</span>
-                  <input 
-                      type="text" 
-                      placeholder="e.g. Dover"
-                      value={cityName}
-                      onChange={(e) => setCityName(e.target.value)}
-                      style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '13px', outline: 'none', minWidth: 0 }}
-                  />
-              </div>
-
-              {/* Road Name Input */}
-              <div style={{ display: 'flex', alignItems: 'center', background: 'var(--input-bg)', borderRadius: 0, padding: '8px 12px', border: '1px solid var(--input-border)' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px', minWidth: '80px' }}>Street Name:</span>
-                  <input 
-                      type="text" 
-                      placeholder="e.g. Main Street"
-                      value={roadName}
-                      onChange={(e) => setRoadName(e.target.value)}
-                      style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '13px', outline: 'none', minWidth: 0 }}
-                  />
-              </div>
-
-              {/* Description Input */}
-              <div style={{ display: 'flex', alignItems: 'flex-start', background: 'var(--input-bg)', borderRadius: 0, padding: '10px 12px', border: '1px solid var(--input-border)' }}>
-                  <textarea 
-                      placeholder="Reason for edit..."
-                      value={editReason} 
-                      onChange={(e) => setEditReason(e.target.value)}
-                      style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '13px', outline: 'none', resize: 'vertical', minHeight: '60px' }}
-                  />
-              </div>
-
-              {/* Apply Button */}
-              <button 
-                  disabled={role === 'guest'}
-                  onClick={applyRoadEdit} 
-                  style={{ 
-                      width: '100%',
-                      background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', 
-                      color: 'white', border: 'none', padding: '12px', borderRadius: 0, 
-                      fontSize: '13px', fontWeight: 700, cursor: role === 'guest' ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
-                      boxShadow: '0 4px 15px rgba(16,185,129,0.4)',
-                      textTransform: 'uppercase', letterSpacing: '0.5px', opacity: role === 'guest' ? 0.5 : 1
-                  }}
-                  onMouseOver={(e) => { if(role !== 'guest') e.currentTarget.style.transform = 'translateY(-2px)' }}
-                  onMouseOut={(e) => { if(role !== 'guest') e.currentTarget.style.transform = 'translateY(0)' }}
-              >
-                  Apply Edit
-              </button>
+            </div>
+            <button
+              className="gmaps-icon-btn"
+              style={{ width: '28px', height: '28px' }}
+              onClick={() => setActivePlace(null)}
+              title="Close place card"
+            >
+              <X size={16} />
+            </button>
           </div>
+
+          <div style={{ display: 'flex', gap: '8px', marginTop: '2px' }}>
+            <button
+              onClick={() => {
+                setPanelMode('directions');
+                setEndPoint(L.latLng(activePlace.lat, activePlace.lng));
+                setEndInputText(activePlace.subtitle || `${activePlace.lat.toFixed(5)}, ${activePlace.lng.toFixed(5)}`);
+                setActivePlace(null);
+              }}
+              style={{
+                flex: 1,
+                background: '#1a73e8',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '20px',
+                padding: '8px 14px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+            >
+              <Navigation size={14} fill="#ffffff" /> Directions
+            </button>
+
+            <button
+              onClick={() => {
+                setPanelMode('directions');
+                setStartPoint(L.latLng(activePlace.lat, activePlace.lng));
+                setStartInputText(activePlace.subtitle || `${activePlace.lat.toFixed(5)}, ${activePlace.lng.toFixed(5)}`);
+                setActivePlace(null);
+              }}
+              style={{
+                background: 'var(--gmaps-hover)',
+                color: 'var(--gmaps-text)',
+                border: '1px solid var(--gmaps-border)',
+                borderRadius: '20px',
+                padding: '8px 14px',
+                fontSize: '12px',
+                fontWeight: 500,
+                cursor: 'pointer'
+              }}
+            >
+              Start here
+            </button>
+          </div>
+        </div>
       )}
 
-      {/* Raw JSON Modal */}
+      {/* ====================================================================
+          BOTTOM-LEFT GOOGLE MAPS LAYER SWITCHER (MAP / SATELLITE)
+          ==================================================================== */}
+      <div style={{ position: 'absolute', bottom: '24px', left: '24px', zIndex: 1000 }}>
+        <div
+          className="gmaps-layer-thumbnail"
+          onClick={() => setMapLayer(mapLayer === 'osm' ? 'satellite' : 'osm')}
+          title={mapLayer === 'osm' ? 'Switch to Satellite view' : 'Switch to Map view'}
+        >
+          <img
+            src={
+              mapLayer === 'osm'
+                ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/13/3175/2374'
+                : 'https://tile.openstreetmap.org/13/2374/3175.png'
+            }
+            alt={mapLayer === 'osm' ? 'Satellite Preview' : 'Map Preview'}
+          />
+          <div className="gmaps-layer-label">
+            {mapLayer === 'osm' ? 'Satellite' : 'Map'}
+          </div>
+        </div>
+      </div>
+
+      {/* ====================================================================
+          BOTTOM-RIGHT GOOGLE MAPS CONTROLS (+/- ZOOM, GPS MY LOCATION)
+          Accurately right-aligned to screen margin
+          ==================================================================== */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: '24px',
+          right: '16px',
+          zIndex: 1000,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: '10px'
+        }}
+      >
+        {/* GeoOps Tools Floating Button */}
+        <button
+          onClick={() => setIsToolsOpen(!isToolsOpen)}
+          className="gmaps-card"
+          style={{
+            padding: '8px 14px',
+            borderRadius: '24px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            border: '1px solid var(--gmaps-border)',
+            boxShadow: 'var(--gmaps-shadow)'
+          }}
+          title="GeoOps Engine & Road Tools"
+        >
+          <Wrench size={14} color="var(--gmaps-blue)" />
+          <span>GeoOps Tools</span>
+          {activeOverrides.length > 0 && (
+            <span
+              style={{
+                background: '#ea4335',
+                color: '#ffffff',
+                borderRadius: '10px',
+                padding: '1px 6px',
+                fontSize: '10px'
+              }}
+            >
+              {activeOverrides.length}
+            </span>
+          )}
+        </button>
+
+        {/* GPS My Location Crosshair Button */}
+        <button
+          className="gmaps-card gmaps-control-btn"
+          style={{ borderRadius: '50%', boxShadow: 'var(--gmaps-shadow)' }}
+          onClick={handleLocateMe}
+          title="Your location"
+        >
+          <LocateFixed size={18} />
+        </button>
+
+        {/* Zoom In & Zoom Out Stack */}
+        <div
+          className="gmaps-card"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            borderRadius: '8px',
+            boxShadow: 'var(--gmaps-shadow)'
+          }}
+        >
+          <button
+            className="gmaps-control-btn"
+            onClick={() => mapInstanceRef.current?.zoomIn()}
+            title="Zoom in"
+          >
+            <Plus size={18} />
+          </button>
+          <div style={{ height: '1px', background: 'var(--gmaps-border)', width: '100%' }} />
+          <button
+            className="gmaps-control-btn"
+            onClick={() => mapInstanceRef.current?.zoomOut()}
+            title="Zoom out"
+          >
+            <Minus size={18} />
+          </button>
+        </div>
+      </div>
+
+      {/* ====================================================================
+          RIGHT-CLICK GOOGLE MAPS CONTEXT MENU
+          Positioned accurately right beside the mouse click
+          ==================================================================== */}
+      {contextMenu && (
+        <div
+          className="gmaps-context-menu"
+          style={{
+            top: `${contextMenu.y}px`,
+            left: `${contextMenu.x}px`
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="gmaps-context-item"
+            onClick={() => {
+              setPanelMode('directions');
+              setStartPoint(contextMenu.latlng);
+              setStartInputText(`${contextMenu.latlng.lat.toFixed(5)}, ${contextMenu.latlng.lng.toFixed(5)}`);
+              setContextMenu(null);
+              reverseGeocode(contextMenu.latlng.lat, contextMenu.latlng.lng, dockerStatus).then((geo) => {
+                if (geo.formattedAddress) setStartInputText(geo.formattedAddress);
+                if (geo.city) setCityName(geo.city);
+              });
+            }}
+          >
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', border: '2px solid #188038' }} />
+            <span>Directions from here</span>
+          </div>
+
+          <div
+            className="gmaps-context-item"
+            onClick={() => {
+              setPanelMode('directions');
+              setEndPoint(contextMenu.latlng);
+              setEndInputText(`${contextMenu.latlng.lat.toFixed(5)}, ${contextMenu.latlng.lng.toFixed(5)}`);
+              setContextMenu(null);
+              reverseGeocode(contextMenu.latlng.lat, contextMenu.latlng.lng, dockerStatus).then((geo) => {
+                if (geo.formattedAddress) setEndInputText(geo.formattedAddress);
+              });
+            }}
+          >
+            <MapPin size={14} color="#ea4335" />
+            <span>Directions to here</span>
+          </div>
+
+          {/* Add Destination / Stop option */}
+          <div
+            className="gmaps-context-item"
+            onClick={() => {
+              setPanelMode('directions');
+              const pt = contextMenu.latlng;
+              setContextMenu(null);
+              if (!startPoint) {
+                setStartPoint(pt);
+                setStartInputText(`${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}`);
+                reverseGeocode(pt.lat, pt.lng, dockerStatus).then((g) => {
+                  if (g.formattedAddress) setStartInputText(g.formattedAddress);
+                });
+              } else if (!endPoint) {
+                setEndPoint(pt);
+                setEndInputText(`${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}`);
+                reverseGeocode(pt.lat, pt.lng, dockerStatus).then((g) => {
+                  if (g.formattedAddress) setEndInputText(g.formattedAddress);
+                });
+              } else {
+                const newId = `stop-${Date.now()}`;
+                setStops((prev) => [...prev, { id: newId, point: pt, text: `${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}` }]);
+                reverseGeocode(pt.lat, pt.lng, dockerStatus).then((g) => {
+                  if (g.formattedAddress) {
+                    setStops((prev) => prev.map((s) => (s.id === newId ? { ...s, text: g.formattedAddress } : s)));
+                  }
+                });
+              }
+            }}
+          >
+            <Plus size={14} color="var(--gmaps-blue)" />
+            <span>Add destination</span>
+          </div>
+
+          <div className="gmaps-context-divider" />
+
+          {/* "What's here?" item */}
+          <div
+            className="gmaps-context-item"
+            onClick={() => {
+              const latlng = contextMenu.latlng;
+              setContextMenu(null);
+              setActivePlace({
+                title: 'Loading address...',
+                subtitle: `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`,
+                lat: latlng.lat,
+                lng: latlng.lng
+              });
+              reverseGeocode(latlng.lat, latlng.lng, dockerStatus).then((geo) => {
+                setActivePlace({
+                  title: geo.road || geo.city || 'Dropped Pin',
+                  subtitle: geo.formattedAddress,
+                  lat: latlng.lat,
+                  lng: latlng.lng
+                });
+                if (geo.city) setCityName(geo.city);
+              });
+            }}
+          >
+            <span>📍 What&apos;s here?</span>
+          </div>
+
+          <div
+            className="gmaps-context-item"
+            onClick={() => {
+              const coords = `${contextMenu.latlng.lat.toFixed(5)}, ${contextMenu.latlng.lng.toFixed(5)}`;
+              navigator.clipboard.writeText(coords);
+              showToast(`Copied ${coords} to clipboard`);
+              setContextMenu(null);
+            }}
+          >
+            <Copy size={14} />
+            <span>Copy coordinates</span>
+          </div>
+
+          <div className="gmaps-context-divider" />
+
+          <div
+            className="gmaps-context-item"
+            onClick={() => {
+              mapInstanceRef.current?.panTo(contextMenu.latlng);
+              setContextMenu(null);
+            }}
+          >
+            <span>Center map here</span>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          COLLAPSIBLE GEOOPS TOOLS & ROAD EDITOR DRAWER
+          ==================================================================== */}
+      {isToolsOpen && (
+        <div
+          className="gmaps-card animate-fade-in"
+          style={{
+            position: 'absolute',
+            top: '16px',
+            right: '16px',
+            zIndex: 1000,
+            width: '320px',
+            maxHeight: 'calc(100vh - 40px)',
+            overflowY: 'auto',
+            padding: '16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Wrench size={16} color="var(--gmaps-blue)" />
+              <span style={{ fontSize: '13px', fontWeight: 700, letterSpacing: '0.5px' }}>GEOOPS ENGINE & TOOLS</span>
+            </div>
+            <button
+              className="gmaps-icon-btn"
+              style={{ width: '28px', height: '28px' }}
+              onClick={() => setIsToolsOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Jump to State Dropdown */}
+          {currentProfileStates.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', fontWeight: 600 }}>JUMP TO MAP REGION</span>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <select
+                  value={selectedState}
+                  onChange={(e) => {
+                    const st = e.target.value;
+                    setSelectedState(st);
+                    const boundsData = (stateBounds as any)[st];
+                    if (boundsData) {
+                      setRouteBounds(L.latLngBounds([
+                        [boundsData[0][0], boundsData[0][1]],
+                        [boundsData[1][0], boundsData[1][1]]
+                      ]));
+                    }
+                  }}
+                  style={{
+                    flex: 1,
+                    background: 'var(--gmaps-bg)',
+                    color: 'var(--gmaps-text)',
+                    border: '1px solid var(--gmaps-border)',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    fontSize: '12px'
+                  }}
+                >
+                  {currentProfileStates.map((st: string) => (
+                    <option key={st} value={st}>
+                      {st.charAt(0).toUpperCase() + st.slice(1).replace('-', ' ')}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    const boundsData = (stateBounds as any)[selectedState];
+                    if (boundsData) {
+                      setRouteBounds(L.latLngBounds([
+                        [boundsData[0][0], boundsData[0][1]],
+                        [boundsData[1][0], boundsData[1][1]]
+                      ]));
+                    }
+                  }}
+                  style={{
+                    background: 'var(--gmaps-blue)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 12px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Go
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Engine Selector */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', fontWeight: 600 }}>ROUTING & GEOCODING ENGINE</span>
+              <span style={{ fontSize: '10px', color: activeEngine === 'osrm' ? 'var(--gmaps-blue)' : '#a78bfa', fontWeight: 600 }}>
+                {activeEngine === 'osrm' ? 'Routing & Road Edits' : 'Geocoding Only'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', background: 'var(--gmaps-hover)', borderRadius: '6px', padding: '3px', border: '1px solid var(--gmaps-border)' }}>
+              {(['osrm', 'nominatim', 'pelias'] as const).map((eng) => (
+                <button
+                  key={eng}
+                  onClick={() => setActiveEngine(eng)}
+                  style={{
+                    flex: 1,
+                    padding: '6px 0',
+                    border: 'none',
+                    borderRadius: '4px',
+                    background: activeEngine === eng ? 'var(--gmaps-blue)' : 'transparent',
+                    color: activeEngine === eng ? '#ffffff' : 'var(--gmaps-subtext)',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    textTransform: 'uppercase'
+                  }}
+                >
+                  {eng}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Road Editor Section: Road edits only work for OSRM */}
+          {activeEngine !== 'osrm' ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                padding: '12px',
+                borderRadius: '8px',
+                border: '1px solid var(--gmaps-border)',
+                background: 'var(--gmaps-hover)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--gmaps-subtext)' }}>ROAD EDITOR</span>
+                <span style={{ fontSize: '10px', background: 'rgba(239,68,68,0.15)', color: '#ef4444', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>
+                  OSRM Only
+                </span>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', lineHeight: '1.4' }}>
+                Road edits (speed limits & closures) only work for the <strong>OSRM</strong> routing engine. {activeEngine === 'nominatim' ? 'Nominatim' : 'Pelias'} is a geocoding engine for address search and place lookups.
+              </div>
+              <button
+                onClick={() => setActiveEngine('osrm')}
+                style={{
+                  background: 'var(--gmaps-blue)',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '8px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px'
+                }}
+              >
+                Switch to OSRM to Edit Roads
+              </button>
+            </div>
+          ) : routeCoordinates.length > 0 && profile === 'car' && isSameRoad ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                padding: '12px',
+                borderRadius: '8px',
+                border: '1px solid var(--gmaps-border)',
+                background: 'var(--gmaps-hover)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--gmaps-green)' }}>ROAD EDITOR</span>
+                  <span style={{ fontSize: '9px', background: 'rgba(24,128,56,0.15)', color: 'var(--gmaps-green)', padding: '1px 5px', borderRadius: '3px', fontWeight: 700 }}>
+                    OSRM
+                  </span>
+                </div>
+                <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)' }}>{roadName || 'Selected Segment'}</span>
+              </div>
+
+              {/* Bidirectional Mode */}
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button
+                  onClick={() => setIsBidirectional(true)}
+                  style={{
+                    flex: 1,
+                    padding: '6px 0',
+                    borderRadius: '4px',
+                    border: 'none',
+                    background: isBidirectional ? 'var(--gmaps-blue)' : 'transparent',
+                    color: isBidirectional ? '#ffffff' : 'var(--gmaps-subtext)',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Both Ways
+                </button>
+                <button
+                  onClick={() => setIsBidirectional(false)}
+                  style={{
+                    flex: 1,
+                    padding: '6px 0',
+                    borderRadius: '4px',
+                    border: 'none',
+                    background: !isBidirectional ? 'var(--gmaps-blue)' : 'transparent',
+                    color: !isBidirectional ? '#ffffff' : 'var(--gmaps-subtext)',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Independent
+                </button>
+              </div>
+
+              {/* Forward Speed Limit & Status */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {!isBidirectional && <span style={{ fontSize: '11px', fontWeight: 600 }}>Direction A &rarr; B:</span>}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--gmaps-subtext)' }}>Speed Limit:</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <input
+                      type="number"
+                      value={newSpeed}
+                      onChange={(e) => setNewSpeed(Number(e.target.value))}
+                      disabled={isClosing}
+                      style={{
+                        width: '45px',
+                        background: 'var(--gmaps-bg)',
+                        border: '1px solid var(--gmaps-border)',
+                        borderRadius: '4px',
+                        color: 'var(--gmaps-text)',
+                        textAlign: 'center',
+                        padding: '4px',
+                        fontSize: '12px',
+                        fontWeight: 600
+                      }}
+                    />
+                    <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)' }}>mph</span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={() => setIsClosing(false)}
+                    style={{
+                      flex: 1,
+                      padding: '6px',
+                      borderRadius: '4px',
+                      border: 'none',
+                      background: !isClosing ? '#188038' : 'var(--gmaps-border)',
+                      color: '#ffffff',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Open
+                  </button>
+                  <button
+                    onClick={() => setIsClosing(true)}
+                    style={{
+                      flex: 1,
+                      padding: '6px',
+                      borderRadius: '4px',
+                      border: 'none',
+                      background: isClosing ? '#ea4335' : 'var(--gmaps-border)',
+                      color: '#ffffff',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Closed
+                  </button>
+                </div>
+              </div>
+
+              {/* Backward Direction (when Independent) */}
+              {!isBidirectional && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '6px', borderTop: '1px solid var(--gmaps-border)' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 600 }}>Direction B &rarr; A:</span>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '12px', color: 'var(--gmaps-subtext)' }}>Speed Limit:</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <input
+                        type="number"
+                        value={backSpeed}
+                        onChange={(e) => setBackSpeed(Number(e.target.value))}
+                        disabled={isBackClosing}
+                        style={{
+                          width: '45px',
+                          background: 'var(--gmaps-bg)',
+                          border: '1px solid var(--gmaps-border)',
+                          borderRadius: '4px',
+                          color: 'var(--gmaps-text)',
+                          textAlign: 'center',
+                          padding: '4px',
+                          fontSize: '12px',
+                          fontWeight: 600
+                        }}
+                      />
+                      <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)' }}>mph</span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => setIsBackClosing(false)}
+                      style={{
+                        flex: 1,
+                        padding: '6px',
+                        borderRadius: '4px',
+                        border: 'none',
+                        background: !isBackClosing ? '#188038' : 'var(--gmaps-border)',
+                        color: '#ffffff',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Open
+                    </button>
+                    <button
+                      onClick={() => setIsBackClosing(true)}
+                      style={{
+                        flex: 1,
+                        padding: '6px',
+                        borderRadius: '4px',
+                        border: 'none',
+                        background: isBackClosing ? '#ea4335' : 'var(--gmaps-border)',
+                        color: '#ffffff',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Closed
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* City and Street Name */}
+              <input
+                type="text"
+                placeholder="City Name"
+                value={cityName}
+                onChange={(e) => setCityName(e.target.value)}
+                style={{
+                  background: 'var(--gmaps-bg)',
+                  border: '1px solid var(--gmaps-border)',
+                  borderRadius: '4px',
+                  color: 'var(--gmaps-text)',
+                  padding: '6px 8px',
+                  fontSize: '12px'
+                }}
+              />
+
+              <input
+                type="text"
+                placeholder="Street Name"
+                value={roadName}
+                onChange={(e) => setRoadName(e.target.value)}
+                style={{
+                  background: 'var(--gmaps-bg)',
+                  border: '1px solid var(--gmaps-border)',
+                  borderRadius: '4px',
+                  color: 'var(--gmaps-text)',
+                  padding: '6px 8px',
+                  fontSize: '12px'
+                }}
+              />
+
+              <textarea
+                placeholder="Reason for road modification..."
+                value={editReason}
+                onChange={(e) => setEditReason(e.target.value)}
+                rows={2}
+                style={{
+                  background: 'var(--gmaps-bg)',
+                  border: '1px solid var(--gmaps-border)',
+                  borderRadius: '4px',
+                  color: 'var(--gmaps-text)',
+                  padding: '6px 8px',
+                  fontSize: '12px',
+                  resize: 'none'
+                }}
+              />
+
+              <button
+                disabled={role === 'guest'}
+                onClick={applyRoadEdit}
+                style={{
+                  background: '#188038',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '10px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: role === 'guest' ? 'not-allowed' : 'pointer',
+                  opacity: role === 'guest' ? 0.6 : 1
+                }}
+              >
+                Apply Road Edit
+              </button>
+            </div>
+          ) : (
+            <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', textAlign: 'center', padding: '12px 0', lineHeight: '1.4' }}>
+              Select a single road route in Driving (OSRM) mode to modify road speeds or closures.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ====================================================================
+          RAW JSON DEBUG MODAL
+          ==================================================================== */}
       {showRawJson && rawJson && (
-        <div style={{
-          position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
-          background: 'rgba(0,0,0,0.5)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          backdropFilter: 'blur(5px)'
-        }}>
-          <div className="glass-panel custom-scrollbar" style={{ width: '80%', height: '80%', overflow: 'auto', padding: '24px', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-            <button 
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            background: 'rgba(0,0,0,0.5)',
+            zIndex: 99999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backdropFilter: 'blur(4px)'
+          }}
+        >
+          <div
+            className="gmaps-card custom-scrollbar"
+            style={{
+              width: '80%',
+              height: '80%',
+              overflow: 'auto',
+              padding: '24px',
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            <button
               onClick={() => setShowRawJson(false)}
-              style={{ position: 'absolute', top: '16px', right: '16px', background: 'var(--danger)', border: 'none', color: 'white', padding: '6px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
-            >Close</button>
-            <h3 style={{ marginTop: 0, marginBottom: '16px', color: 'var(--text-primary)' }}>OSRM Request & Response</h3>
-            
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: 600 }}>Request URL:</div>
-              <button 
+              style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                background: '#ea4335',
+                border: 'none',
+                color: '#ffffff',
+                padding: '6px 12px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 600
+              }}
+            >
+              Close
+            </button>
+
+            <h3 style={{ margin: '0 0 16px 0', color: 'var(--gmaps-text)' }}>OSRM Request & Response</h3>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--gmaps-subtext)' }}>Request URL:</span>
+              <button
                 onClick={() => {
                   navigator.clipboard.writeText(rawRequestUrl);
                   setCopiedUrl(true);
                   setTimeout(() => setCopiedUrl(false), 2000);
                 }}
-                style={{ background: 'transparent', border: '1px solid var(--input-border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', transition: 'all 0.2s' }}
-                onMouseOver={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
-                onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--gmaps-border)',
+                  color: 'var(--gmaps-text)',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '11px'
+                }}
               >
-                {copiedUrl ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                {copiedUrl ? <Check size={12} color="#188038" /> : <Copy size={12} />}
                 {copiedUrl ? 'Copied' : 'Copy'}
               </button>
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-primary)', background: 'var(--input-bg)', padding: '12px', border: '1px solid var(--input-border)', marginBottom: '20px', wordBreak: 'break-all', borderRadius: '4px' }}>
-                {rawRequestUrl}
+            <div
+              style={{
+                fontSize: '11px',
+                background: 'var(--gmaps-hover)',
+                padding: '10px',
+                borderRadius: '6px',
+                border: '1px solid var(--gmaps-border)',
+                marginBottom: '16px',
+                wordBreak: 'break-all'
+              }}
+            >
+              {rawRequestUrl}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: 600 }}>Response JSON:</div>
-              <button 
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--gmaps-subtext)' }}>Response JSON:</span>
+              <button
                 onClick={() => {
-                  navigator.clipboard.writeText(JSON.stringify(rawJson));
+                  navigator.clipboard.writeText(JSON.stringify(rawJson, null, 2));
                   setCopiedJson(true);
                   setTimeout(() => setCopiedJson(false), 2000);
                 }}
-                style={{ background: 'transparent', border: '1px solid var(--input-border)', color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', transition: 'all 0.2s' }}
-                onMouseOver={(e) => e.currentTarget.style.background = 'var(--divider-bg)'}
-                onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--gmaps-border)',
+                  color: 'var(--gmaps-text)',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '11px'
+                }}
               >
-                {copiedJson ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                {copiedJson ? <Check size={12} color="#188038" /> : <Copy size={12} />}
                 {copiedJson ? 'Copied' : 'Copy'}
               </button>
             </div>
-            <pre style={{ flex: 1, fontSize: '12px', color: 'var(--text-primary)', background: 'var(--input-bg)', padding: '16px', border: '1px solid var(--input-border)', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', borderRadius: '4px' }}>
-              {JSON.stringify(rawJson)}
+            <pre
+              style={{
+                flex: 1,
+                fontSize: '11px',
+                background: 'var(--gmaps-hover)',
+                padding: '14px',
+                borderRadius: '6px',
+                border: '1px solid var(--gmaps-border)',
+                margin: 0,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all'
+              }}
+            >
+              {JSON.stringify(rawJson, null, 2)}
             </pre>
           </div>
         </div>

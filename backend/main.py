@@ -13,6 +13,35 @@ from database import SessionLocal, RoadOverride, engine, Base, User
 
 app = FastAPI(title="OSRM Management API")
 
+container_log_sizes = {}
+import threading
+
+def update_log_sizes_bg():
+    while True:
+        try:
+            import docker
+            client = docker.from_env()
+            res = client.containers.run('alpine', 'sh -c "stat -c \'%n %s\' /containers/*/*-json.log"', remove=True, volumes={'/var/lib/docker/containers': {'bind': '/containers', 'mode': 'ro'}})
+            lines = res.decode('utf-8').strip().split('\n')
+            
+            size_map = {}
+            for line in lines:
+                parts = line.strip().split(' ')
+                if len(parts) == 2:
+                    c_id = parts[0].split('/')[-2]
+                    size_map[c_id] = int(parts[1])
+            
+            for c in client.containers.list(all=True):
+                if any(x in c.name for x in ['osrm-car', 'osrm-foot', 'nominatim', 'pelias']):
+                    if c.id in size_map:
+                        container_log_sizes[c.name] = size_map[c.id]
+        except:
+            pass
+        import time
+        time.sleep(10)
+
+threading.Thread(target=update_log_sizes_bg, daemon=True).start()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -192,6 +221,9 @@ def rebuild_osrm_data():
         client = docker.from_env()
         
         for profile in ['car', 'foot']:
+            if not os.path.exists(os.path.join(data_dir, f'{profile}.osm.pbf')):
+                continue
+            
             osrm_container = None
             for container in client.containers.list():
                 if f"osrm-{profile}" in container.name:
@@ -232,7 +264,7 @@ def remove_all_containers():
         containers = client.containers.list(all=True)
         count = 0
         for c in containers:
-            if 'osrm-car' in c.name or 'osrm-foot' in c.name:
+            if any(name in c.name for name in ['osrm-car', 'osrm-foot', 'nominatim', 'pelias']):
                 try:
                     c.stop()
                 except:
@@ -324,10 +356,18 @@ def get_docker_status():
         containers = client.containers.list(all=True)
         car_status = 'Not Found'
         foot_status = 'Not Found'
+        nominatim_status = 'Not Found'
+        pelias_status = 'Not Found'
         car_started_at = None
         foot_started_at = None
         car_port = 5001
         foot_port = 5005
+        nominatim_started_at = None
+        pelias_started_at = None
+        car_port = 5001
+        foot_port = 5005
+        nominatim_port = 8080
+        pelias_port = 4000
         for c in containers:
             if 'osrm-car' in c.name:
                 car_status = c.status
@@ -339,6 +379,19 @@ def get_docker_status():
                 foot_started_at = c.attrs.get('State', {}).get('StartedAt')
                 if c.attrs.get('HostConfig', {}).get('PortBindings', {}).get('5000/tcp'):
                     foot_port = int(c.attrs['HostConfig']['PortBindings']['5000/tcp'][0]['HostPort'])
+            if c.name in ['nominatim', 'routeops-nominatim-1']:
+                nominatim_status = c.status
+                nominatim_started_at = c.attrs.get('State', {}).get('StartedAt')
+                if c.attrs.get('HostConfig', {}).get('PortBindings', {}).get('8080/tcp'):
+                    nominatim_port = int(c.attrs['HostConfig']['PortBindings']['8080/tcp'][0]['HostPort'])
+            if c.name in ['pelias_api', 'routeops-pelias-1']:
+                pelias_status = c.status
+                pelias_started_at = c.attrs.get('State', {}).get('StartedAt')
+                pb = c.attrs.get('HostConfig', {}).get('PortBindings', {})
+                if '3100/tcp' in pb and pb['3100/tcp']:
+                    pelias_port = int(pb['3100/tcp'][0]['HostPort'])
+                elif '4000/tcp' in pb and pb['4000/tcp']:
+                    pelias_port = int(pb['4000/tcp'][0]['HostPort'])
         active_states = []
         try:
             import json
@@ -350,7 +403,74 @@ def get_docker_status():
         logs_str = '\n'.join(deploy_logs).lower() if 'deploy_logs' in globals() else ''
         is_deploying = len(deploy_logs) > 0 and 'deployment complete!' not in logs_str if 'deploy_logs' in globals() else False
             
-        return {'car': car_status, 'foot': foot_status, 'car_started_at': car_started_at, 'foot_started_at': foot_started_at, 'car_port': car_port, 'foot_port': foot_port, 'active_states': active_states, 'is_deploying': is_deploying}
+        car_log_size = 0
+        foot_log_size = 0
+        nominatim_log_size = 0
+        pelias_log_size = 0
+        for name, size in container_log_sizes.items():
+            if 'osrm-car' in name: car_log_size = size
+            elif 'osrm-foot' in name: foot_log_size = size
+            elif name in ['nominatim', 'routeops-nominatim-1']: nominatim_log_size = size
+            elif name in ['pelias_api', 'routeops-pelias-1']: pelias_log_size = size
+
+        return {'car': car_status, 'foot': foot_status, 'nominatim': nominatim_status, 'pelias': pelias_status, 'car_started_at': car_started_at, 'foot_started_at': foot_started_at, 'nominatim_started_at': nominatim_started_at, 'pelias_started_at': pelias_started_at, 'car_port': car_port, 'foot_port': foot_port, 'nominatim_port': nominatim_port, 'pelias_port': pelias_port, 'active_states': active_states, 'is_deploying': is_deploying, 'car_log_size': car_log_size, 'foot_log_size': foot_log_size, 'nominatim_log_size': nominatim_log_size, 'pelias_log_size': pelias_log_size}
+    except Exception as e:
+        return {'error': str(e)}
+
+@app.post('/system/docker/nominatim/restart')
+def restart_nominatim():
+    try:
+        client = docker.from_env()
+        try:
+            c = client.containers.get('routeops-nominatim-1')
+        except docker.errors.NotFound:
+            c = client.containers.get('nominatim')
+        c.restart()
+        return {'status': 'success'}
+    except Exception as e:
+        return {'error': str(e)}
+
+@app.post('/system/docker/pelias/install')
+def install_pelias(background_tasks: BackgroundTasks):
+    def run_pelias_build():
+        try:
+            client = docker.from_env()
+            try: client.networks.get('routeops-geocoding_default')
+            except: client.networks.create('routeops-geocoding_default', driver='bridge')
+            log_msg("--- Starting Pelias Schema Index ---")
+            stream_container_logs(client, 'pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+            log_msg("--- Starting Pelias OSM Import ---")
+            stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+            log_msg("--- Pelias Build Finished! ---")
+        except Exception as e:
+            log_msg(f"Pelias build error: {e}")
+
+    background_tasks.add_task(run_pelias_build)
+    return {'status': 'success'}
+
+@app.get('/system/docker/nominatim/logs')
+def get_nominatim_logs():
+    try:
+        client = docker.from_env()
+        try:
+            c = client.containers.get('routeops-nominatim-1')
+        except docker.errors.NotFound:
+            c = client.containers.get('nominatim')
+        logs = c.logs(tail=100).decode('utf-8', errors='replace').splitlines()
+        return {'logs': logs}
+    except Exception as e:
+        return {'error': str(e)}
+
+@app.get('/system/docker/pelias/logs')
+def get_pelias_logs():
+    try:
+        client = docker.from_env()
+        try:
+            c = client.containers.get('routeops-pelias-1')
+        except docker.errors.NotFound:
+            c = client.containers.get('pelias_api')
+        logs = c.logs(tail=100).decode('utf-8', errors='replace').splitlines()
+        return {'logs': logs}
     except Exception as e:
         return {'error': str(e)}
 
@@ -377,15 +497,24 @@ class DeployRequest(BaseModel):
 
 def stream_container_logs(client, image, command, **kwargs):
     try:
-        logs = client.containers.run(image, command, remove=True, stream=True, **kwargs)
-        for chunk in logs:
+        from docker.types import LogConfig
+        kwargs['log_config'] = LogConfig(type=LogConfig.types.JSON)
+        kwargs['detach'] = True
+        container = client.containers.run(image, command, **kwargs)
+        for chunk in container.logs(stream=True, follow=True):
             for line in chunk.decode('utf-8', errors='replace').splitlines():
                 if line.strip():
                     log_msg(line.strip())
+        res = container.wait()
+        container.remove(force=True)
+        if res.get('StatusCode', 0) != 0:
+            log_msg(f"Warning: command exited with code {res.get('StatusCode')}")
     except Exception as e:
         log_msg(f"Error running {command}: {e}")
 
-def process_deploy(car_port: int, foot_port: int):
+def process_deploy(car_port: int, foot_port: int, engines: dict = None):
+    if engines is None:
+        engines = {"car": True, "foot": True}
     import shutil
     import yaml
     import os
@@ -399,8 +528,10 @@ def process_deploy(car_port: int, foot_port: int):
         try:
             with open(compose_path, 'r') as f:
                 compose_data = yaml.safe_load(f)
-            compose_data['services']['osrm-car']['ports'] = [f'{car_port}:5000']
-            compose_data['services']['osrm-foot']['ports'] = [f'{foot_port}:5000']
+            if engines.get("car", True):
+                compose_data['services']['osrm-car']['ports'] = [f'{car_port}:5000']
+            if engines.get("foot", True):
+                compose_data['services']['osrm-foot']['ports'] = [f'{foot_port}:5000']
             with open(compose_path, 'w') as f:
                 yaml.dump(compose_data, f)
             log_msg('Updated docker-compose.yml ports.')
@@ -410,26 +541,36 @@ def process_deploy(car_port: int, foot_port: int):
         # 2. Stop and remove existing OSRM containers
         client = docker.from_env()
         for container in client.containers.list(all=True):
-            if 'osrm-car' in container.name or 'osrm-foot' in container.name:
+            if engines.get("car", True) and 'osrm-car' in container.name:
+                log_msg(f'Stopping and removing {container.name}...')
+                container.stop()
+                container.remove()
+            if engines.get("foot", True) and 'osrm-foot' in container.name:
                 log_msg(f'Stopping and removing {container.name}...')
                 container.stop()
                 container.remove()
                 
-        # 3. Clean /data directory (except merged.osm.pbf)
+        # 3. Clean /data directory
         data_dir = get_data_dir()
         for f in os.listdir(data_dir):
-            if f not in ['merged.osm.pbf', 'speeds.csv', 'active_states.json']:
+            if f not in ['speeds.csv', 'active_states.json', 'pelias.json'] and not f.endswith('.osm.pbf'):
+                if f.startswith('car') and not engines.get("car", True):
+                    continue
+                if f.startswith('foot') and not engines.get("foot", True):
+                    continue
+                if f.startswith('backup_car') and not engines.get("car", True):
+                    continue
+                if f.startswith('backup_foot') and not engines.get("foot", True):
+                    continue
                 p = os.path.join(data_dir, f)
                 if os.path.isfile(p):
                     os.remove(p)
                 elif os.path.isdir(p):
                     shutil.rmtree(p)
-        log_msg('Wiped old OSRM graph data.')
+        log_msg('Wiped old OSRM graph data for targeted engines.')
         
-        # 4. Build graphs if merged.osm.pbf exists
-        if os.path.exists(os.path.join(data_dir, 'merged.osm.pbf')):
-            shutil.copy(os.path.join(data_dir, 'merged.osm.pbf'), os.path.join(data_dir, 'car.osm.pbf'))
-            shutil.copy(os.path.join(data_dir, 'merged.osm.pbf'), os.path.join(data_dir, 'foot.osm.pbf'))
+        # 4. Build graphs if pbf exists
+        if os.path.exists(os.path.join(data_dir, 'car.osm.pbf')) or os.path.exists(os.path.join(data_dir, 'foot.osm.pbf')):
             
             try:
                 db_session = SessionLocal()
@@ -456,51 +597,55 @@ def process_deploy(car_port: int, foot_port: int):
 
             has_speeds = os.path.exists(os.path.join(data_dir, "speeds.csv")) and os.path.getsize(os.path.join(data_dir, "speeds.csv")) > 0
             
-            cust_cmd_car = ['osrm-customize', '/data/car.osrm']
-            if has_speeds:
-                cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
+            if engines.get("car", True) and os.path.exists(os.path.join(data_dir, 'car.osm.pbf')):
+                cust_cmd_car = ['osrm-customize', '/data/car.osrm']
+                if has_speeds:
+                    cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
 
-            log_msg('Running OSRM Extract for CAR...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
-            log_msg('Running OSRM Partition for CAR...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], **get_docker_mounts())
+                log_msg('Running OSRM Extract for CAR...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
+                log_msg('Running OSRM Partition for CAR...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], **get_docker_mounts())
+                
+                log_msg('Creating backup of pristine CAR graph...')
+                stream_container_logs(client, 'ubuntu', ['sh', '-c', 'mkdir -p /data/backup_car && cp /data/car.osrm* /data/backup_car/'], **get_docker_mounts())
+                
+                log_msg('Running OSRM Customize for CAR...')
+                stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, **get_docker_mounts())
             
-            log_msg('Creating backup of pristine CAR graph...')
-            stream_container_logs(client, 'ubuntu', ['sh', '-c', 'mkdir -p /data/backup_car && cp /data/car.osrm* /data/backup_car/'], **get_docker_mounts())
-            
-            log_msg('Running OSRM Customize for CAR...')
-            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, **get_docker_mounts())
-            
-            cust_cmd_foot = ['osrm-customize', '/data/foot.osrm']
-            if has_speeds:
-                cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
+            if engines.get("foot", True) and os.path.exists(os.path.join(data_dir, 'foot.osm.pbf')):
+                cust_cmd_foot = ['osrm-customize', '/data/foot.osrm']
+                if has_speeds:
+                    cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
 
-            log_msg('Running OSRM Extract for FOOT...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
-            log_msg('Running OSRM Partition for FOOT...')
-            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], **get_docker_mounts())
-            
-            log_msg('Creating backup of pristine FOOT graph...')
-            stream_container_logs(client, 'ubuntu', ['sh', '-c', 'mkdir -p /data/backup_foot && cp /data/foot.osrm* /data/backup_foot/'], **get_docker_mounts())
-            
-            log_msg('Running OSRM Customize for FOOT...')
-            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
+                log_msg('Running OSRM Extract for FOOT...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
+                log_msg('Running OSRM Partition for FOOT...')
+                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], **get_docker_mounts())
+                
+                log_msg('Creating backup of pristine FOOT graph...')
+                stream_container_logs(client, 'ubuntu', ['sh', '-c', 'mkdir -p /data/backup_foot && cp /data/foot.osrm* /data/backup_foot/'], **get_docker_mounts())
+                
+                log_msg('Running OSRM Customize for FOOT...')
+                stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
         else:
-            log_msg('Warning: merged.osm.pbf not found. Skipping graph build.')
+            log_msg('Warning: No .osm.pbf files found. Skipping graph build.')
             
         # 5. Recreate containers with new ports
         import time
-        log_msg('Recreating osrm-car container with shared memory...')
-        car_c = client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-car-1', ports={'5000/tcp': car_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
-        
-        log_msg('Waiting for car profile to finish loading into memory before starting foot profile...')
-        for _ in range(15):
-            time.sleep(2)
-            if b'running and waiting for requests' in car_c.logs(tail=20):
-                break
-                
-        log_msg('Recreating osrm-foot container with shared memory...')
-        client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-foot-1', ports={'5000/tcp': foot_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+        if engines.get("car", True) and os.path.exists(os.path.join(data_dir, 'car.osm.pbf')):
+            log_msg('Recreating osrm-car container with shared memory...')
+            car_c = client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-car-1', ports={'5000/tcp': car_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+            
+            log_msg('Waiting for car profile to finish loading into memory before starting foot profile...')
+            for _ in range(15):
+                time.sleep(2)
+                if b'running and waiting for requests' in car_c.logs(tail=20):
+                    break
+                    
+        if engines.get("foot", True) and os.path.exists(os.path.join(data_dir, 'foot.osm.pbf')):
+            log_msg('Recreating osrm-foot container with shared memory...')
+            client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-foot-1', ports={'5000/tcp': foot_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
         
         log_msg('Deployment complete!')
     except Exception as e:
@@ -531,11 +676,16 @@ def get_system_logs():
     except:
         return {'logs': ['[SYSTEM] Listening for deployment events...']}
 
+from typing import Dict
+
 class MergeRequest(BaseModel):
-    states: list[str]
+    states: Dict[str, list[str]]
     car_port: int
     foot_port: int
+    nominatim_port: int = 8080
+    pelias_port: int = 4000
     force_download: bool = False
+    engines: Dict[str, bool] = {"osrm": True, "nominatim": True, "pelias": True}
 
 @app.post('/system/merge')
 def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
@@ -555,22 +705,26 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         pass
 
-    def process_merge(states: list[str], force_download: bool):
+    def process_merge(states_dict: dict, force_download: bool, engines: dict):
         import urllib.request
         import subprocess
         import shutil
-        log_msg(f'Starting merge for {states}')
+        log_msg(f'Starting merge for {states_dict}')
         data_dir = get_data_dir()
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
-        files = []
-        for state in states:
+            
+        all_states = set()
+        for s_list in states_dict.values():
+            for s in s_list:
+                all_states.add(s)
+                
+        for state in all_states:
             url = f'https://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
             file_path = os.path.join(data_dir, f'{state}.osm.pbf')
             
             if not force_download and os.path.exists(file_path):
                 log_msg(f'Using cached map data for {state}...')
-                files.append(f'/data/{state}.osm.pbf')
             else:
                 log_msg(f'Downloading {url} to {file_path}')
                 try:
@@ -587,7 +741,6 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                                 downloaded = block_num * block_size
                                 speed_mbps = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
                                 speed_str = f"{speed_mbps:.1f} MB/s"
-                                # Update last line of log
                                 try:
                                     log_path = os.path.join(get_data_dir(), 'deploy.log')
                                     with open(log_path, 'r') as lf:
@@ -599,41 +752,129 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                                 except:
                                     pass
 
+                    import urllib.request
                     urllib.request.urlretrieve(url, file_path, reporthook=reporthook)
-                    files.append(f'/data/{state}.osm.pbf')
                 except Exception as e:
                     log_msg(f'Failed to download {state}: {e}')
+                    
+        import docker
+        import shutil
+        client = docker.from_env()
+        
+        for profile, states_req in states_dict.items():
+            if not states_req or not engines.get(profile, True):
+                continue
                 
-        if len(files) == 0:
-            log_msg('Error: No states were successfully downloaded. Geofabrik might be unavailable.')
-            log_msg('Deployment failed')
-            try:
-                os.remove(os.path.join(data_dir, 'active_states.json'))
-            except Exception:
-                pass
-            return
-
-        if len(files) > 1:
-            log_msg('Merging files using osmium-tool...')
-            merged_file = '/data/merged.osm.pbf'
+            out_file = f'/data/{profile}.osm.pbf'
+            host_out_file = os.path.join(data_dir, f'{profile}.osm.pbf')
+            if len(states_req) == 1:
+                shutil.copy(os.path.join(data_dir, f'{states_req[0]}.osm.pbf'), host_out_file)
+                log_msg(f'Copied {states_req[0]} to {profile}.osm.pbf')
+            elif len(states_req) > 1:
+                log_msg(f'Merging files for {profile} using osmium-tool...')
+                files_to_merge = [f'/data/{s}.osm.pbf' for s in states_req]
+                command = ['osmium', 'merge'] + files_to_merge + ['-o', out_file, '-O']
+                try:
+                    stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
+                    log_msg(f'Merge successful for {profile}!')
+                except Exception as e:
+                    log_msg(f'Merge failed for {profile}: {e}')
+                    
+        log_msg('--- MERGE COMPLETE, STARTING DEPLOYMENT ---')
+        if engines.get("car", True) or engines.get("foot", True):
+            process_deploy(req.car_port, req.foot_port, engines=engines)
+            
+        try:
+            import docker
+            client = docker.from_env()
+            try: client.networks.get('routeops-geocoding_default')
+            except: client.networks.create('routeops-geocoding_default', driver='bridge')
+        except: pass
+        
+        if engines.get("nominatim", True):
+            log_msg(f'Recreating Nominatim on port {req.nominatim_port}...')
             try:
                 import docker
                 client = docker.from_env()
-                command = ['osmium', 'merge'] + files + ['-o', merged_file, '-O']
-                stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
-                log_msg('Merge successful!')
+                try:
+                    c = client.containers.get('routeops-nominatim-1')
+                    c.stop()
+                    c.remove()
+                except:
+                    pass
+                try:
+                    c = client.containers.get('nominatim')
+                    c.stop()
+                    c.remove()
+                except:
+                    pass
+                client.containers.run('mediagis/nominatim:5.3', name='routeops-nominatim-1', ports={'8080/tcp': req.nominatim_port}, environment={'PBF_PATH': '/data/nominatim.osm.pbf', 'NOMINATIM_PASSWORD': 'super_secure_password', 'REPLICATION_URL': 'https://planet.osm.org/replication/hour/'}, network='routeops-geocoding_default', shm_size='2g', restart_policy={'Name': 'always'}, detach=True, volumes={'nominatim-data': {'bind': '/var/lib/postgresql/14/main', 'mode': 'rw'}, **(get_docker_mounts().get('volumes', {}))}, volumes_from=get_docker_mounts().get('volumes_from', None))
+                log_msg('Nominatim Recreated!')
+            except Exception as e: log_msg(f"Nominatim restart failed: {e}")
+        if engines.get("pelias", True):
+            log_msg(f'Rebuilding Pelias Index and recreating API on port {req.pelias_port}...')
+            try:
+                client = docker.from_env()
+                # Generate pelias.json
+                pelias_json_content = '''{
+  "logger": { "level": "info", "timestamp": false },
+  "esclient": { "hosts": [{"host": "routeops-pelias-elasticsearch-1", "port": 9200}] },
+  "elasticsearch": {
+    "settings": {
+      "index": {
+        "refresh_interval": "10s",
+        "number_of_replicas": "0",
+        "number_of_shards": "1"
+      }
+    }
+  },
+  "api": { "services": { } },
+  "imports": {
+    "adminLookup": { "enabled": false },
+    "openstreetmap": {
+      "datapath": "/data",
+      "import": [{"filename": "pelias.osm.pbf"}]
+    }
+  }
+}'''
+                with open(os.path.join(data_dir, 'pelias.json'), 'w') as f:
+                    f.write(pelias_json_content)
+
+                try:
+                    c = client.containers.get('routeops-pelias-elasticsearch-1')
+                    c.stop()
+                    c.remove()
+                except:
+                    pass
+                log_msg('Starting Pelias Elasticsearch...')
+                client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
+                import time
+                log_msg('Waiting 15s for Elasticsearch to initialize...')
+                time.sleep(15)
+
+                stream_container_logs(client, 'pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+                stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+                
+                try:
+                    c = client.containers.get('routeops-pelias-1')
+                    c.stop()
+                    c.remove()
+                except:
+                    pass
+                try:
+                    c = client.containers.get('pelias_api')
+                    c.stop()
+                    c.remove()
+                except:
+                    pass
+                client.containers.run('pelias/api:master', name='routeops-pelias-1', ports={'3100/tcp': req.pelias_port}, environment={'PELIAS_CONFIG': '/data/pelias.json'}, network='routeops-geocoding_default', restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
+                
+                log_msg("--- Pelias Build & API Restart Finished! ---")
             except Exception as e:
-                log_msg(f'Merge failed: {e}')
-                log_msg('Deployment failed')
-                try: os.remove(os.path.join(data_dir, 'active_states.json'))
-                except Exception: pass
-                return
-        elif len(files) == 1:
-            shutil.copy(os.path.join(data_dir, os.path.basename(files[0])), os.path.join(data_dir, 'merged.osm.pbf'))
-            log_msg('Only 1 state, copied to merged.osm.pbf')
-            
-        log_msg('--- MERGE COMPLETE, STARTING DEPLOYMENT ---')
-        process_deploy(req.car_port, req.foot_port)
+                log_msg(f"Pelias build error: {e}")
+        
+        log_msg('Fresh Deployment complete!')
+        log_msg('Deployment complete!')
             
     def safe_process_merge(*args):
         try:
@@ -645,7 +886,7 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
             try: os.remove(os.path.join(get_data_dir(), 'active_states.json'))
             except: pass
             
-    background_tasks.add_task(safe_process_merge, req.states, req.force_download)
+    background_tasks.add_task(safe_process_merge, req.states, req.force_download, req.engines)
     return {'status': 'Started'}
 
 @app.post('/system/update')
@@ -666,7 +907,7 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         pass
 
-    def process_update(states: list[str], force_download: bool):
+    def process_update(states_dict: dict, force_download: bool, engines: dict):
         import urllib.request
         import subprocess
         import shutil
@@ -674,21 +915,26 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
         import time
         import csv
         
-        log_msg(f'Starting zero-downtime update for {states}')
+        log_msg(f'Starting zero-downtime update for {states_dict}')
         data_dir = get_data_dir()
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
-        files = []
-        for state in states:
+            
+        all_states = set()
+        for s_list in states_dict.values():
+            for s in s_list:
+                all_states.add(s)
+                
+        for state in all_states:
             url = f'https://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
             file_path = os.path.join(data_dir, f'{state}.osm.pbf')
             
             if not force_download and os.path.exists(file_path):
                 log_msg(f'Using cached map data for {state}...')
-                files.append(f'/data/{state}.osm.pbf')
             else:
                 log_msg(f'Downloading {url} to {file_path}')
                 try:
+                    import time
                     last_pct = [0]
                     start_time = [time.time()]
                     def reporthook(block_num, block_size, total_size):
@@ -712,123 +958,132 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
                                 except:
                                     pass
 
+                    import urllib.request
                     urllib.request.urlretrieve(url, file_path, reporthook=reporthook)
-                    files.append(f'/data/{state}.osm.pbf')
                 except Exception as e:
                     log_msg(f'Failed to download {state}: {e}')
-                
-        if len(files) == 0:
-            log_msg('Error: No states were successfully downloaded. Geofabrik might be unavailable.')
-            log_msg('Deployment failed')
-            try:
-                os.remove(os.path.join(data_dir, 'active_states.json'))
-            except Exception:
-                pass
-            return
-
-        if len(files) > 1:
-            log_msg('Merging files using osmium-tool...')
-            merged_file = '/data/merged.osm.pbf'
-            try:
-                client = docker.from_env()
-                command = ['osmium', 'merge'] + files + ['-o', merged_file, '-O']
-                stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
-                log_msg('Merge successful!')
-            except Exception as e:
-                log_msg(f'Merge failed: {e}')
-                log_msg('Deployment failed')
-                try: os.remove(os.path.join(data_dir, 'active_states.json'))
-                except Exception: pass
-                return
-        elif len(files) == 1:
-            shutil.copy(os.path.join(data_dir, os.path.basename(files[0])), os.path.join(data_dir, 'merged.osm.pbf'))
-            log_msg('Only 1 state, copied to merged.osm.pbf')
-            
-        log_msg('--- MERGE COMPLETE, STARTING BUILD ---')
+                    
+        import docker
+        import shutil
+        client = docker.from_env()
         
-        try:
-            client = docker.from_env()
-            merged_path = os.path.join(data_dir, 'merged.osm.pbf')
-            if os.path.exists(merged_path):
-                import psutil
-                pbf_size = os.path.getsize(merged_path)
-                available_ram = psutil.virtual_memory().available
-                required_ram = pbf_size * 5  # Conservative estimate for zero-downtime build + hot reload
+        for profile, states_req in states_dict.items():
+            if not states_req or not engines.get(profile, True):
+                continue
                 
-                if available_ram < required_ram:
-                    log_msg(f"WARNING: Insufficient RAM for zero-downtime update.")
-                    log_msg(f"Available: {available_ram / (1024**3):.1f} GB. Required (Estimated): {required_ram / (1024**3):.1f} GB.")
-                    log_msg("Falling back to standard deployment (will cause brief downtime)...")
-                    process_deploy(req.car_port, req.foot_port)
-                    return
-
-                shutil.copy(merged_path, os.path.join(data_dir, 'car.osm.pbf'))
-                shutil.copy(merged_path, os.path.join(data_dir, 'foot.osm.pbf'))
-                
+            out_file = f'/data/{profile}.osm.pbf'
+            host_out_file = os.path.join(data_dir, f'{profile}.osm.pbf')
+            if len(states_req) == 1:
+                shutil.copy(os.path.join(data_dir, f'{states_req[0]}.osm.pbf'), host_out_file)
+                log_msg(f'Copied {states_req[0]} to {profile}.osm.pbf')
+            elif len(states_req) > 1:
+                log_msg(f'Merging files for {profile} using osmium-tool...')
+                files_to_merge = [f'/data/{s}.osm.pbf' for s in states_req]
+                command = ['osmium', 'merge'] + files_to_merge + ['-o', out_file, '-O']
                 try:
-                    db_session = SessionLocal()
-                    overrides = db_session.query(RoadOverride).all()
-                    csv_path = os.path.join(data_dir, "speeds.csv")
-                    with open(csv_path, 'w', newline='') as f:
-                        writer = csv.writer(f)
-                        for ov in overrides:
-                            speed = 1 if ov.is_closed else max(1, int(round(ov.speed_kmh)))
-                            if ',' in ov.from_node:
-                                nodes = ov.from_node.split(',')
-                                for i in range(len(nodes) - 1):
-                                    writer.writerow([nodes[i], nodes[i+1], speed])
-                                    if ov.is_bidirectional:
-                                        writer.writerow([nodes[i+1], nodes[i], speed])
-                            else:
-                                writer.writerow([ov.from_node, ov.to_node, speed])
-                                if ov.is_bidirectional:
-                                    writer.writerow([ov.to_node, ov.from_node, speed])
-                    db_session.close()
-                    log_msg(f"Exported {len(overrides)} road overrides to speeds.csv")
+                    stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
+                    log_msg(f'Merge successful for {profile}!')
                 except Exception as e:
-                    log_msg(f"Failed to export speeds.csv: {e}")
+                    log_msg(f'Merge failed for {profile}: {e}')
+                    
+        has_speeds = os.path.exists(os.path.join(data_dir, "speeds.csv")) and os.path.getsize(os.path.join(data_dir, "speeds.csv")) > 0
+        
+        if engines.get("car", True) and os.path.exists(os.path.join(data_dir, 'car.osm.pbf')):
+            cust_cmd_car = ['osrm-customize', '/data/car.osrm']
+            if has_speeds:
+                cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
 
-                has_speeds = os.path.exists(os.path.join(data_dir, "speeds.csv")) and os.path.getsize(os.path.join(data_dir, "speeds.csv")) > 0
-                
-                cust_cmd_car = ['osrm-customize', '/data/car.osrm']
-                if has_speeds:
-                    cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
+            log_msg('Running OSRM Extract for CAR...')
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
+            log_msg('Running OSRM Partition for CAR...')
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], **get_docker_mounts())
+            log_msg('Running OSRM Customize for CAR...')
+            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, **get_docker_mounts())
+        
+        if engines.get("foot", True) and os.path.exists(os.path.join(data_dir, 'foot.osm.pbf')):
+            cust_cmd_foot = ['osrm-customize', '/data/foot.osrm']
+            if has_speeds:
+                cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
 
-                log_msg('Running OSRM Extract for CAR...')
-                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
-                log_msg('Running OSRM Partition for CAR...')
-                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/car.osrm'], **get_docker_mounts())
-                log_msg('Running OSRM Customize for CAR...')
-                stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_car, **get_docker_mounts())
-                
-                cust_cmd_foot = ['osrm-customize', '/data/foot.osrm']
-                if has_speeds:
-                    cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
-
-                log_msg('Running OSRM Extract for FOOT...')
-                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
-                log_msg('Running OSRM Partition for FOOT...')
-                stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], **get_docker_mounts())
-                log_msg('Running OSRM Customize for FOOT...')
-                stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
-            else:
-                log_msg('Warning: merged.osm.pbf not found. Skipping graph build.')
-                
+            log_msg('Running OSRM Extract for FOOT...')
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
+            log_msg('Running OSRM Partition for FOOT...')
+            stream_container_logs(client, 'osrm/osrm-backend', ['osrm-partition', '/data/foot.osrm'], **get_docker_mounts())
+            log_msg('Running OSRM Customize for FOOT...')
+            stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
+            
+        if engines.get("car", True) and os.path.exists(os.path.join(data_dir, 'car.osm.pbf')):
             log_msg('Hot-reloading CAR container with shared memory...')
             for container in client.containers.list(all=True):
                 if 'osrm-car' in container.name:
                     container.exec_run('osrm-datastore /data/car.osrm')
                     log_msg('Hot-reloaded CAR profile successfully.')
-            
+        
+        if engines.get("foot", True) and os.path.exists(os.path.join(data_dir, 'foot.osm.pbf')):
             log_msg('Hot-reloading FOOT container with shared memory...')
             for container in client.containers.list(all=True):
                 if 'osrm-foot' in container.name:
                     container.exec_run('osrm-datastore /data/foot.osrm')
                     log_msg('Hot-reloaded FOOT profile successfully.')
-                    
-            log_msg('Zero-Downtime Deployment complete!')
-        except Exception as e:
-            log_msg(f'Build and hot-reload failed: {e}')
+                        
+        try:
+            import docker
+            client = docker.from_env()
+            try: client.networks.get('routeops-geocoding_default')
+            except: client.networks.create('routeops-geocoding_default', driver='bridge')
+        except: pass
+        
+        if engines.get("nominatim", True):
+            log_msg('Restarting Nominatim to pick up new PBF...')
+            try: 
+                try: docker.from_env().containers.get('routeops-nominatim-1').restart()
+                except: docker.from_env().containers.get('nominatim').restart()
+            except Exception as e: pass
+        if engines.get("pelias", True):
+            log_msg('Rebuilding Pelias Index...')
+            try:
+                # Generate pelias.json
+                pelias_json_content = '''{
+  "logger": { "level": "info", "timestamp": false },
+  "esclient": { "hosts": [{"host": "routeops-pelias-elasticsearch-1", "port": 9200}] },
+  "elasticsearch": {
+    "settings": {
+      "index": {
+        "refresh_interval": "10s",
+        "number_of_replicas": "0",
+        "number_of_shards": "1"
+      }
+    }
+  },
+  "api": { "services": { } },
+  "imports": {
+    "adminLookup": { "enabled": false },
+    "openstreetmap": {
+      "datapath": "/data",
+      "import": [{"filename": "pelias.osm.pbf"}]
+    }
+  }
+}'''
+                with open(os.path.join(data_dir, 'pelias.json'), 'w') as f:
+                    f.write(pelias_json_content)
+
+                try:
+                    c = client.containers.get('routeops-pelias-elasticsearch-1')
+                    if c.status != 'running':
+                        c.start()
+                except:
+                    log_msg('Starting Pelias Elasticsearch...')
+                    client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
+                    import time
+                    log_msg('Waiting 15s for Elasticsearch to initialize...')
+                    time.sleep(15)
+
+                stream_container_logs(client, 'pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+                stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+            except Exception as e: pass
+
+        log_msg('Zero-Downtime Deployment complete!')
+
             
     def safe_process_update(*args):
         try:
@@ -840,8 +1095,60 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
             try: os.remove(os.path.join(get_data_dir(), 'active_states.json'))
             except: pass
             
-    background_tasks.add_task(safe_process_update, req.states, req.force_download)
+    background_tasks.add_task(safe_process_update, req.states, req.force_download, req.engines)
     return {'status': 'Started'}
+
+API_CALLS_FILE = '/data/api_calls.json'
+recorded_api_calls = []
+
+def load_recorded_api_calls():
+    global recorded_api_calls
+    try:
+        if os.path.exists(API_CALLS_FILE):
+            import json
+            with open(API_CALLS_FILE, 'r') as f:
+                recorded_api_calls = json.load(f)
+    except:
+        recorded_api_calls = []
+
+def save_recorded_api_calls():
+    try:
+        import json
+        with open(API_CALLS_FILE, 'w') as f:
+            json.dump(recorded_api_calls[:1000], f)
+    except:
+        pass
+
+load_recorded_api_calls()
+
+class ApiCallLog(BaseModel):
+    profile: str
+    service: str
+    latency: str
+    path: str
+    status: int = 200
+    timestamp: str = None
+
+@app.post('/system/api-calls/log')
+def log_api_call(call: ApiCallLog):
+    import datetime
+    now_str = datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+    lat_str = str(call.latency)
+    if not lat_str.endswith('ms'):
+        lat_str = f"{lat_str}ms"
+    entry = {
+        'profile': call.profile,
+        'service': call.service,
+        'latency': lat_str,
+        'path': call.path,
+        'status': int(call.status or 200),
+        'timestamp': call.timestamp or now_str
+    }
+    recorded_api_calls.insert(0, entry)
+    if len(recorded_api_calls) > 1000:
+        del recorded_api_calls[1000:]
+    save_recorded_api_calls()
+    return {'status': 'ok'}
 
 @app.get('/system/api-calls')
 def get_api_calls():
@@ -849,9 +1156,10 @@ def get_api_calls():
     try:
         client = docker.from_env()
         for c in client.containers.list(all=True):
+            # 1. Parse OSRM Car & Foot containers
             if 'osrm-car' in c.name or 'osrm-foot' in c.name:
                 profile = 'car' if 'car' in c.name else 'foot'
-                logs = c.logs(tail=1000).decode('utf-8').split('\n')
+                logs = c.logs(tail=1000).decode('utf-8', errors='replace').split('\n')
                 for line in reversed(logs):
                     if not line or '[info]' not in line or '/v1/' not in line:
                         continue
@@ -864,42 +1172,113 @@ def get_api_calls():
                         
                         service = url.split('/v1/')[0].replace('/', '')
                         coords = url.split('?')[0].split('/')[-1]
+                        status = 200
+                        for p in parts:
+                            if p in ('200', '400', '404', '500'):
+                                status = int(p)
+                                break
                         
                         calls.append({
                             'profile': profile,
                             'timestamp': f'{parts[1]} {parts[2]}',
                             'latency': latency,
                             'path': coords,
-                            'service': service
+                            'service': service,
+                            'status': status
                         })
                     except:
                         pass
                     if len(calls) >= 500:
                         break
-        
-        unique_calls = []
-        seen = set()
-        for c in calls:
-            if c['path'] not in seen:
-                seen.add(c['path'])
-                unique_calls.append(c)
-            if len(unique_calls) >= 500:
-                break
-                
-        return {'calls': unique_calls[:500]}
+
+            # 2. Parse Pelias API container
+            elif ('pelias' in c.name or 'pelias_api' in c.name) and not any(k in c.name for k in ['elasticsearch', 'schema', 'openstreetmap']):
+                import re, datetime
+                logs = c.logs(tail=1000).decode('utf-8', errors='replace').split('\n')
+                for i in range(len(logs) - 1, -1, -1):
+                    line = logs[i]
+                    m = re.search(r'\[(\d{1,2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}\s+[+-]?\d{4})\]\s+"[A-Z]+\s+(/v1/([^/?\s]+)[^\s]*)\s+HTTP/[0-9.]+"\s+(\d+)', line)
+                    if m:
+                        ts_str, url, service, status_code = m.group(1), m.group(2), m.group(3), m.group(4)
+                        try:
+                            dt = datetime.datetime.strptime(ts_str, '%d/%b/%Y:%H:%M:%S %z')
+                            ts = dt.strftime('%d-%m-%Y %H:%M:%S')
+                        except:
+                            ts = ts_str
+                        
+                        latency = '15ms'
+                        for prev in logs[max(0, i-4):i]:
+                            rm = re.search(r'response_time=(\d+)', prev)
+                            if rm:
+                                latency = f'{rm.group(1)}ms'
+                                break
+                        
+                        calls.append({
+                            'profile': 'pelias',
+                            'timestamp': ts,
+                            'latency': latency,
+                            'path': url,
+                            'service': service,
+                            'status': int(status_code)
+                        })
+                        if len(calls) >= 800:
+                            break
+
+        # Merge in recorded API calls (e.g. from Nominatim/Pelias client queries)
+        calls.extend(recorded_api_calls)
+
+        # Sort all calls by timestamp descending
+        def parse_ts(item):
+            t = item.get('timestamp', '')
+            try:
+                import datetime
+                return datetime.datetime.strptime(t, '%d-%m-%Y %H:%M:%S').timestamp()
+            except:
+                return 0
+
+        calls.sort(key=parse_ts, reverse=True)
+        return {'calls': calls[:500]}
+    except Exception as e:
+        return {'error': str(e)}
+
+@app.post('/system/docker/{profile}/clear_logs')
+def clear_docker_logs(profile: str):
+    global recorded_api_calls
+    recorded_api_calls = [c for c in recorded_api_calls if c.get('profile') != profile]
+    save_recorded_api_calls()
+    try:
+        import docker
+        client = docker.from_env()
+        for c in client.containers.list(all=True):
+            is_match = False
+            if profile == 'nominatim' and c.name in ['nominatim', 'routeops-nominatim-1']: is_match = True
+            elif profile == 'pelias' and c.name in ['pelias_api', 'routeops-pelias-1']: is_match = True
+            elif f'osrm-{profile}' in c.name: is_match = True
+            
+            if is_match:
+                log_path = c.attrs.get('LogPath')
+                if log_path:
+                    client.containers.run('alpine', 'sh -c "cat /dev/null > /host_log"', remove=True, volumes={log_path: {'bind': '/host_log', 'mode': 'rw'}})
+                    return {'status': 'cleared'}
+        return {'status': 'cleared'}
     except Exception as e:
         return {'error': str(e)}
 
 @app.get('/system/docker/{profile}/logs')
 def get_docker_logs(profile: str):
-    if profile not in ('car', 'foot'):
+    if profile not in ('car', 'foot', 'nominatim', 'pelias'):
         return {'logs': ['Invalid profile']}
     try:
         import docker
         client = docker.from_env()
         for c in client.containers.list(all=True):
-            if f'osrm-{profile}' in c.name:
-                logs = c.logs(tail=50).decode('utf-8').split('\n')
+            is_match = False
+            if profile == 'nominatim' and c.name in ['nominatim', 'routeops-nominatim-1']: is_match = True
+            elif profile == 'pelias' and c.name in ['pelias_api', 'routeops-pelias-1']: is_match = True
+            elif f'osrm-{profile}' in c.name: is_match = True
+            
+            if is_match:
+                logs = c.logs(tail=50).decode('utf-8', errors='replace').split('\n')
                 return {'logs': [l for l in logs if l.strip()]}
         return {'logs': [f'Container for profile {profile} not running']}
     except Exception as e:
@@ -966,7 +1345,13 @@ def start_docker_container(profile: str):
         client = docker.from_env()
         containers = client.containers.list(all=True)
         for c in containers:
-            if f'osrm-{profile}' in c.name:
+            if profile == 'nominatim' and c.name in ['nominatim', 'routeops-nominatim-1']:
+                c.start()
+                return {'status': 'started'}
+            elif profile == 'pelias' and c.name in ['pelias_api', 'routeops-pelias-1']:
+                c.start()
+                return {'status': 'started'}
+            elif f'osrm-{profile}' in c.name:
                 c.start()
                 return {'status': 'started'}
         return {'status': 'not found'}
@@ -979,7 +1364,13 @@ def stop_docker_container(profile: str):
         client = docker.from_env()
         containers = client.containers.list(all=True)
         for c in containers:
-            if f'osrm-{profile}' in c.name:
+            if profile == 'nominatim' and c.name in ['nominatim', 'routeops-nominatim-1']:
+                c.stop()
+                return {'status': 'stopped'}
+            elif profile == 'pelias' and c.name in ['pelias_api', 'routeops-pelias-1']:
+                c.stop()
+                return {'status': 'stopped'}
+            elif f'osrm-{profile}' in c.name:
                 c.stop()
                 return {'status': 'stopped'}
         return {'status': 'not found'}

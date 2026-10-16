@@ -26,7 +26,7 @@ export default function Dashboard() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, active_states?: string[], is_deploying?: boolean } | null>(null);
+  const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, nominatim?: string, pelias?: string, active_states?: string[] | Record<string, string[]>, is_deploying?: boolean } | null>(null);
   const [dbStatus, setDbStatus] = useState<string | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
@@ -87,6 +87,12 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  const activeStatesArray = Array.isArray(dockerStatus?.active_states)
+    ? dockerStatus?.active_states
+    : (dockerStatus?.active_states && typeof dockerStatus?.active_states === 'object'
+      ? (Array.from(new Set(Object.values(dockerStatus.active_states).flat().filter(s => s !== 'all'))) as string[])
+      : []);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', padding: isFullScreen ? '0' : '4px 0', gap: isFullScreen ? '0' : '4px', boxSizing: 'border-box' }}>
 
@@ -103,7 +109,7 @@ export default function Dashboard() {
               <MapIcon size={24} />
             </div>
             <div>
-              <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>RouteOps</h2>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>GeoOps</h2>
             </div>
           </div>
 
@@ -141,19 +147,26 @@ export default function Dashboard() {
           </nav>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', paddingRight: '1rem', borderRight: '1px solid var(--panel-border)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="blink" style={{ width: '8px', height: '8px', borderRadius: '50%', '--current-color': dbStatus === 'connected' ? 'var(--success)' : 'var(--danger)', border: '1px solid var(--current-color)' } as React.CSSProperties}></div>
-                <span style={{ fontSize: '0.9rem' }}>DB: {dbStatus === 'connected' ? 'Connected' : 'Offline'}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="blink" style={{ width: '8px', height: '8px', borderRadius: '50%', '--current-color': dockerStatus?.car === 'running' ? 'var(--success)' : 'var(--danger)', border: '1px solid var(--current-color)' } as React.CSSProperties}></div>
-                <span style={{ fontSize: '0.9rem' }}>Car: {dockerStatus?.car === 'running' ? 'Active' : 'Offline'}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="blink" style={{ width: '8px', height: '8px', borderRadius: '50%', '--current-color': dockerStatus?.foot === 'running' ? 'var(--success)' : 'var(--danger)', border: '1px solid var(--current-color)' } as React.CSSProperties}></div>
-                <span style={{ fontSize: '0.9rem' }}>Foot: {dockerStatus?.foot === 'running' ? 'Active' : 'Offline'}</span>
-              </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingRight: '1rem', borderRight: '1px solid var(--panel-border)' }}>
+              {[
+                { label: 'PostgreSQL Status', active: dbStatus === 'connected' }
+              ].map(s => (
+                <div key={s.label} style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  padding: '4px 10px', borderRadius: '12px',
+                  background: s.active ? 'rgba(16, 185, 129, 0.1)' : 'rgba(161, 161, 170, 0.1)',
+                  border: `1px solid ${s.active ? 'rgba(16, 185, 129, 0.2)' : 'rgba(161, 161, 170, 0.2)'}`
+                }}>
+                  <div className={s.active ? "blink" : ""} style={{
+                    width: '6px', height: '6px', borderRadius: '50%',
+                    background: s.active ? '#10b981' : '#a1a1aa',
+                    '--current-color': s.active ? '#10b981' : '#a1a1aa'
+                  } as any} />
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: s.active ? '#10b981' : '#a1a1aa', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    {s.label}
+                  </span>
+                </div>
+              ))}
             </div>
             <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -214,7 +227,11 @@ export default function Dashboard() {
             height: '100%',
             zIndex: activeTab === 'map' ? 10 : 0
           }}>
-            <MapDisplay activeStates={dockerStatus?.active_states || []} isActive={activeTab === 'map'} dockerStatus={dockerStatus} />
+            <MapDisplay
+              activeStates={activeStatesArray}
+              isActive={activeTab === 'map'}
+              dockerStatus={dockerStatus}
+            />
           </div>
           <div style={{
             visibility: activeTab === 'setup' ? 'visible' : 'hidden',
@@ -233,7 +250,7 @@ export default function Dashboard() {
             overflow: 'auto',
             zIndex: activeTab === 'edits' ? 10 : 0
           }}>
-            <ActiveEdits activeStates={dockerStatus?.active_states || []} />
+            <ActiveEdits activeStates={activeStatesArray} />
           </div>
         </div>
       </div>
@@ -248,7 +265,7 @@ export default function Dashboard() {
           fontSize: '0.85rem',
           color: 'var(--text-secondary)'
         }}>
-          <span>&copy; {new Date().getFullYear()} IT Curves | RouteOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
+          <span>&copy; {new Date().getFullYear()} IT Curves | GeoOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
         </footer>
       )}
 

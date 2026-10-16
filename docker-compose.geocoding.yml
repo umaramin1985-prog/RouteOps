@@ -1,0 +1,79 @@
+version: '3.8'
+
+name: routeops-geocoding
+
+services:
+  # ==========================================
+  # NOMINATIM (Geocoding & Reverse Geocoding)
+  # ==========================================
+  nominatim:
+    image: mediagis/nominatim:5.3
+    container_name: nominatim
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      # This tells Nominatim to automatically import this PBF on first run
+      - PBF_PATH=/data/nominatim.osm.pbf
+      - NOMINATIM_PASSWORD=super_secure_password
+      - REPLICATION_URL=https://planet.osm.org/replication/hour/
+    volumes:
+      - ./data:/data
+      - nominatim-data:/var/lib/postgresql/14/main
+    shm_size: 2g
+
+  # ==========================================
+  # PELIAS (Flexible Geocoding / Search)
+  # ==========================================
+  pelias_elasticsearch:
+    image: pelias/elasticsearch:7.17.15
+    container_name: pelias_elasticsearch
+    restart: always
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    volumes:
+      - pelias-data:/usr/share/elasticsearch/data
+
+  pelias_schema:
+    image: pelias/schema:master
+    container_name: pelias_schema
+    environment:
+      - PELIAS_CONFIG=/data/pelias.json
+    volumes:
+      - ./data:/data
+    # This command creates the index; usually run once before import
+    command: npm run create_index
+    depends_on:
+      - pelias_elasticsearch
+
+  pelias_api:
+    image: pelias/api:master
+    container_name: pelias_api
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      - PELIAS_CONFIG=/data/pelias.json
+    volumes:
+      - ./data:/data
+    depends_on:
+      - pelias_elasticsearch
+
+  pelias_osm_importer:
+    image: pelias/openstreetmap:master
+    container_name: pelias_osm_importer
+    environment:
+      - PELIAS_CONFIG=/data/pelias.json
+    volumes:
+      - ./data:/data
+    # You typically run this service manually to import the OSM data
+    # command: npm start
+    profiles:
+      - tools # Only starts if you explicitly run it
+
+volumes:
+  nominatim-data:
+  pelias-data:
