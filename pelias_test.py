@@ -40,10 +40,31 @@ except: pass
 print("Starting elasticsearch...")
 es = client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, detach=True, volumes={data_dir: {'bind': '/data', 'mode': 'rw'}})
 
-print("Waiting 15 seconds for ES...")
-time.sleep(15)
+print("Waiting for Elasticsearch to become ready...")
+for _ in range(45):
+    try:
+        c = client.containers.get('routeops-pelias-elasticsearch-1')
+        if c.status == 'running':
+            res = c.exec_run('curl -s http://localhost:9200/_cluster/health')
+            out = res.output.decode('utf-8', errors='ignore')
+            if res.exit_code == 0 and ('yellow' in out or 'green' in out or 'status' in out):
+                print("Elasticsearch is healthy and ready!")
+                break
+    except Exception:
+        pass
+    time.sleep(2)
 
-print("Running schema...")
+print("Preparing schema index...")
+try:
+    c = client.containers.get('routeops-pelias-elasticsearch-1')
+    chk = c.exec_run('curl -s -o /dev/null -w "%{http_code}" http://localhost:9200/pelias')
+    if chk.exit_code == 0 and chk.output.decode('utf-8').strip() == '200':
+        print("Dropping existing index for clean recreate...")
+        c.exec_run('curl -s -X DELETE http://localhost:9200/pelias')
+except Exception as e:
+    print("Index check notice:", e)
+
+print("Running schema create_index...")
 try:
     logs = client.containers.run('pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', volumes={data_dir: {'bind': '/data', 'mode': 'rw'}}, remove=True)
     print(logs.decode())

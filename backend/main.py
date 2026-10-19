@@ -437,10 +437,20 @@ def install_pelias(background_tasks: BackgroundTasks):
             client = docker.from_env()
             try: client.networks.get('routeops-geocoding_default')
             except: client.networks.create('routeops-geocoding_default', driver='bridge')
-            log_msg("--- Starting Pelias Schema Index ---")
-            stream_container_logs(client, 'pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+            if not setup_pelias_schema(client, get_docker_mounts()):
+                log_msg("Cannot proceed with Pelias build: Schema setup failed.")
+                return
             log_msg("--- Starting Pelias OSM Import ---")
             stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+            try:
+                c = client.containers.get('routeops-pelias-1')
+                c.restart()
+            except:
+                try:
+                    c = client.containers.get('pelias_api')
+                    c.restart()
+                except:
+                    pass
             log_msg("--- Pelias Build Finished! ---")
         except Exception as e:
             log_msg(f"Pelias build error: {e}")
@@ -507,10 +517,63 @@ def stream_container_logs(client, image, command, **kwargs):
                     log_msg(line.strip())
         res = container.wait()
         container.remove(force=True)
-        if res.get('StatusCode', 0) != 0:
-            log_msg(f"Warning: command exited with code {res.get('StatusCode')}")
+        status_code = res.get('StatusCode', 0)
+        if status_code != 0:
+            log_msg(f"Warning: command exited with code {status_code}")
+            return False
+        return True
     except Exception as e:
         log_msg(f"Error running {command}: {e}")
+        return False
+
+def wait_for_elasticsearch_ready(client, container_name='routeops-pelias-elasticsearch-1', timeout=90):
+    import time
+    log_msg(f"Waiting for Elasticsearch ({container_name}) to become ready...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            c = client.containers.get(container_name)
+            if c.status == 'running':
+                res = c.exec_run('curl -s http://localhost:9200/_cluster/health')
+                out = res.output.decode('utf-8', errors='ignore')
+                if res.exit_code == 0 and ('yellow' in out or 'green' in out or 'status' in out):
+                    log_msg("Elasticsearch is healthy and ready!")
+                    return True
+        except Exception:
+            pass
+        time.sleep(2)
+    log_msg("Warning: Elasticsearch readiness check timed out.")
+    return False
+
+def setup_pelias_schema(client, mounts):
+    """Ensures Elasticsearch is healthy and the pelias index schema is created/recreated."""
+    if not wait_for_elasticsearch_ready(client):
+        log_msg("Error: Elasticsearch is not reachable. Aborting Pelias schema setup.")
+        return False
+
+    # Check if index already exists; if so, drop it first to ensure clean schema rebuild
+    try:
+        c = client.containers.get('routeops-pelias-elasticsearch-1')
+        chk = c.exec_run('curl -s -o /dev/null -w "%{http_code}" http://localhost:9200/pelias')
+        if chk.exit_code == 0 and chk.output.decode('utf-8').strip() == '200':
+            log_msg("Dropping existing Pelias index for fresh rebuild...")
+            c.exec_run('curl -s -X DELETE http://localhost:9200/pelias')
+    except Exception as e:
+        log_msg(f"Notice during index check/drop: {e}")
+
+    log_msg("--- Creating Pelias Schema Index ---")
+    ok = stream_container_logs(
+        client,
+        'pelias/schema:master',
+        ['npm', 'run', 'create_index'],
+        environment={"PELIAS_CONFIG": "/data/pelias.json"},
+        network='routeops-geocoding_default',
+        **mounts
+    )
+    if not ok:
+        log_msg("Pelias schema index creation failed.")
+        return False
+    return True
 
 def process_deploy(car_port: int, foot_port: int, engines: dict = None):
     if engines is None:
@@ -848,12 +911,12 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
                     pass
                 log_msg('Starting Pelias Elasticsearch...')
                 client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
-                import time
-                log_msg('Waiting 15s for Elasticsearch to initialize...')
-                time.sleep(15)
 
-                stream_container_logs(client, 'pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
-                stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+                if not setup_pelias_schema(client, get_docker_mounts()):
+                    log_msg("Pelias schema setup failed. Skipping OSM import.")
+                else:
+                    log_msg("--- Starting Pelias OSM Import ---")
+                    stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
                 
                 try:
                     c = client.containers.get('routeops-pelias-1')
@@ -1074,13 +1137,23 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
                 except:
                     log_msg('Starting Pelias Elasticsearch...')
                     client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
-                    import time
-                    log_msg('Waiting 15s for Elasticsearch to initialize...')
-                    time.sleep(15)
 
-                stream_container_logs(client, 'pelias/schema:master', ['npm', 'run', 'create_index'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
-                stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
-            except Exception as e: pass
+                if not setup_pelias_schema(client, get_docker_mounts()):
+                    log_msg("Pelias schema setup failed. Skipping OSM import.")
+                else:
+                    log_msg("--- Starting Pelias OSM Import ---")
+                    stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
+                    try:
+                        c = client.containers.get('routeops-pelias-1')
+                        c.restart()
+                    except:
+                        try:
+                            c = client.containers.get('pelias_api')
+                            c.restart()
+                        except:
+                            pass
+            except Exception as e:
+                log_msg(f"Pelias update error: {e}")
 
         log_msg('Zero-Downtime Deployment complete!')
 
