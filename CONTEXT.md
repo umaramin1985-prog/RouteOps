@@ -1,0 +1,490 @@
+# RouteOps / GeoOps v2.3.0 - Comprehensive Project Context
+
+> **Project Name:** RouteOps (frontend branding: **GeoOps**)  
+> **Repository:** `umaramin1985-prog/RouteOps`  
+> **Current Version:** `2.3.0`  
+> **Architecture:** Full-stack microservices (FastAPI backend + React/Vite frontend + OSRM routing engines + Nominatim & Pelias geocoders + PostgreSQL/PostGIS / SQLite database + Docker SDK)
+
+---
+
+## 1. Executive Summary & Purpose
+
+**RouteOps** is an enterprise-grade transportation management and routing operations platform engineered around the **Open Source Routing Machine (OSRM)**, complemented by **Nominatim** and **Pelias** geocoding engines.
+
+The platform provides a modern command-center interface to:
+1. **Deploy and Manage Routing Engines on Demand:** Select any US state (or combination of states), download raw OpenStreetMap (`.osm.pbf`) data directly from Geofabrik, merge graphs using `osmium-tool`, and compile Multi-Level Dijkstra (MLD) routing graphs for both Driving (`car`) and Walking (`foot`) profiles inside isolated Docker containers.
+2. **Execute Zero-Downtime Map Updates:** Add or remove state maps on-the-fly. The backend compiles the new graph in the background and dynamically swaps it into running containers via shared memory (`/dev/shm` and `osrm-datastore`) without dropping in-flight navigation requests.
+3. **Perform Zero-Downtime Hot-Swapping Road Overrides:** Click any road segment on the live map to enforce custom speed limits or full road closures. Changes are instantly injected into the routing graph via `osrm-customize` and `osrm-datastore` without restarting containers.
+4. **Inspect & Manage Road Overrides:** The **Active Edits** tab provides a paginated, searchable grid of all active road closures and speed adjustments, with geographic coordinate filtering, road/city metadata, and one-click removal.
+5. **Interactive Live Navigation:** Multi-stop waypoints (up to 8 intermediate stops), turn-by-turn navigation instructions with maneuver icons, toll avoidance filtering, alternative route calculations, GPS tracking ("Locate Me"), satellite tile switching, and raw JSON request/response inspection.
+6. **Dual Geocoding & Address Autocomplete:** Integrated search powered by local **Nominatim** and **Pelias** Docker services, with resilient automated fallbacks to **Photon (Komoot)**, **OpenStreetMap Nominatim**, and **BigDataCloud**.
+7. **Real-Time Telemetry & Operations Command:** Live CPU, RAM, Disk I/O, Network throughput charts (`recharts`), container health checks, API hit counters, latency tracking, Docker container log streaming, and an embedded Docker terminal.
+
+---
+
+## 2. System Architecture & Topology
+
+```
+                                  +------------------------------------------------+
+                                  |                 Client Browser                 |
+                                  |    (React 19 + TypeScript + Leaflet + Vite)    |
+                                  +-----------------------+------------------------+
+                                                          |
+                                    HTTP :80 (Prod) /     |     HTTP :5001 (Car)
+                                    HTTP :5173 (Dev)      |     HTTP :5005 (Foot)
+                                                          |     HTTP :8080 (Nominatim)
+                                                          v     HTTP :4000 (Pelias)
+                          +-------------------------------+--------------------------------+
+                          |                   Nginx (Prod) / Vite (Dev)                    |
+                          |  Proxies /api/* -> Backend:8000 | Serves SPA bundle on /       |
+                          +-------------------------------+--------------------------------+
+                                                          |
+                                                          v
+                                  +------------------------------------------------+
+                                  |             RouteOps Backend (FastAPI)         |
+                                  |  - REST Endpoints (/overrides, /system/*)      |
+                                  |  - Docker SDK Controller via docker.sock       |
+                                  |  - Background Tasks (Merge, Build, Customize)  |
+                                  |  - Host Telemetry via psutil                   |
+                                  +-------+-------------------+--------------------+
+                                          |                   |
+                     Shared SQLite/PG     |                   | Docker SDK / Socket
+                                          v                   v
++-------------------------------------------+   +------------------------------------------------+
+|             Database Layer                |   |             Docker Engine Daemon               |
+| - SQLite: osrm_portal.db (Local default)  |   |            (/var/run/docker.sock)              |
+| - PostgreSQL/PostGIS 15:5433 (Compose)    |   +---------------------+--------------------------+
+| - Alembic Schema Migrations               |                         |
++-------------------------------------------+                         |
+                                                                      +---> routeops-osrm-car-1 (:5001)
+                                                                      |     - osrm-routed --shared-memory
+                                                                      |     - osrm-datastore hot-swap
+                                                                      |
+                                                                      +---> routeops-osrm-foot-1 (:5005)
+                                                                      |     - osrm-routed --shared-memory
+                                                                      |     - osrm-datastore hot-swap
+                                                                      |
+                                                                      +---> routeops-nominatim-1 (:8080)
+                                                                      |     - mediagis/nominatim:5.3
+                                                                      |
+                                                                      +---> Pelias Geocoding Stack:
+                                                                      |     - routeops-pelias-elasticsearch-1 (:9200)
+                                                                      |     - routeops-pelias-1 (:4000 -> :3100)
+                                                                      |     - pelias/schema (on build)
+                                                                      |     - pelias/openstreetmap (on build)
+                                                                      |
+                                                                      +---> stefda/osmium-tool (ephemeral merge)
+                                                                      |
+                                                                      +---> Persistent Volume: /data
+                                                                            - speeds.csv, active_states.json
+                                                                            - deploy.log, api_calls.json
+                                                                            - *.osm.pbf, *.osrm*, backup_*
+```
+
+---
+
+## 3. Repository Directory Structure
+
+```
+c:\Code\OSRM 2\
+├── .gitignore                      # Ignores node_modules, __pycache__, data/, .env, build/
+├── LICENSE                         # MIT License
+├── README.md                       # High-level project documentation, v2.3.0 release notes
+├── docker-compose.yml              # Dev compose: backend (:8000), frontend (:5173), postgis db (:5433)
+├── docker-compose.prod.yml         # Production compose: backend (:5172), frontend (:80), postgis db (:5433)
+├── docker-compose.geocoding.yml    # Geocoding compose: Nominatim (:8080) + Pelias (ES:9200, API:4000)
+├── install.py                      # Interactive fresh install Python runner (port collision resolution)
+├── setup-windows.ps1               # Automated installer/updater for Windows (PowerShell)
+├── setup-ubuntu.sh                 # Automated installer/updater for Ubuntu / Debian (Bash)
+├── setup-centos.sh                 # Automated installer/updater for CentOS / RHEL / Alma (Bash)
+├── patch.py                        # Python patch script for backend state-dictionary merge logic
+├── patch_main.py                   # Python patch script for Nominatim/Pelias container recreation
+├── patch_frontend.py               # Python patch script for per-engine modal tabs in EngineSetup.tsx
+├── patch_map.py                    # Python patch script for geocoding tabs and pins in MapDisplay.tsx
+├── pelias_test.py                  # Standalone test script for Pelias ES readiness and schema creation
+├── test_osm.py                     # Standalone test script for Pelias OSM import execution
+│
+├── backend/                        # FastAPI Backend Application
+│   ├── Dockerfile                  # Python 3.10-slim + docker.io CLI + requirements
+│   ├── requirements.txt            # Python dependencies (fastapi, uvicorn, docker, psutil, alembic...)
+│   ├── database.py                 # SQLAlchemy database setup, RoadOverride & User models
+│   ├── main.py                     # Main application entry point, REST endpoints, Docker orchestrator
+│   ├── state_bounds.json           # US geographic bounding boxes for state regions
+│   ├── test_logs.py                # Scratch script testing Docker log clearing via Alpine mount
+│   ├── test_logs2.py               # Scratch script inspecting container LogPath sizes
+│   ├── test_mount.py               # Scratch script inspecting /var/lib/docker/containers mount
+│   ├── alembic.ini                 # Alembic migration configuration
+│   └── alembic/                    # Alembic migration scripts
+│       ├── env.py                  # Alembic runtime environment connecting to SQLAlchemy models
+│       ├── script.py.mako          # Migration template
+│       └── versions/
+│           └── 4ee414d6b05f_initial_schema.py # Initial migration baseline
+│
+├── frontend/                       # React / Vite Frontend Application
+│   ├── package.json                # React 19, Vite 8, react-leaflet 5, recharts 3, lucide-react
+│   ├── tsconfig.json               # Root TypeScript configuration
+│   ├── tsconfig.app.json           # Application TypeScript configuration
+│   ├── tsconfig.node.json          # Node/Vite TypeScript configuration
+│   ├── vite.config.ts              # Vite configuration with React plugin
+│   ├── nginx.conf                  # Production Nginx reverse proxy configuration
+│   ├── Dockerfile                  # Dev frontend Dockerfile
+│   ├── Dockerfile.prod             # Production multi-stage build Dockerfile (Vite build -> Nginx)
+│   ├── index.html                  # HTML entry point with viewport and Inter font
+│   ├── update_guest.py             # Script to inject guest role permission guards across components
+│   ├── update_guest_exact.py       # Refined guest role injection helper
+│   ├── public/                     # Static assets (favicons, background images)
+│   │   ├── favicon.svg             # Application logo
+│   │   ├── icons.svg               # SVG icons
+│   │   ├── login-bg.jpg            # Login background image
+│   │   ├── minimal-bg.jpg          # Dark theme background
+│   │   └── minimal-bg-light.jpg    # Light theme background
+│   └── src/
+│       ├── main.tsx                # React DOM root entry point
+│       ├── App.tsx                 # App router, theme initialization, ProtectedRoute
+│       ├── App.css                 # Base application animations and keyframes
+│       ├── index.css               # Core CSS design system: dark/light theme variables, glassmorphism
+│       ├── stateBounds.json        # Detailed coordinate bounds for all 50 US states
+│       ├── us-states.json          # GeoJSON boundaries of all US states for map overlays
+│       ├── assets/                 # App icons and hero images
+│       ├── utils/
+│       │   └── geocoding.ts        # Search & reverse geocoding client, telemetry logging, multi-provider fallbacks
+│       └── components/
+│           ├── Login.tsx           # Authentication view (admin/guest login, password recovery)
+│           ├── Dashboard.tsx       # Top navbar, tab router (#setup, #map, #edits), DB status, theme toggle
+│           ├── EngineSetup.tsx     # Engine management, telemetry charts, container logs, terminal, deployment modal
+│           ├── MapDisplay.tsx      # Leaflet interactive map, routing, road overrides modal, geocoding
+│           └── ActiveEdits.tsx     # Active road overrides grid, state filtering, pagination, deletion
+│
+└── data/                           # Runtime storage mounted into containers (git-ignored)
+    ├── active_states.json          # Currently deployed states per engine profile
+    ├── speeds.csv                  # Road speed penalties generated from database for osrm-customize
+    ├── deploy.log                  # Live log file streamed to the UI during build/merge/deploy
+    ├── api_calls.json              # Buffer of recent API hits for analytics
+    ├── pelias.json                 # Pelias configuration generated on deployment
+    ├── *.osm.pbf                   # Cached raw state PBF files downloaded from Geofabrik
+    ├── car.osrm* / foot.osrm*      # Compiled OSRM routing graphs
+    └── backup_car/ / backup_foot/  # Clean, unpatched OSRM graph backups
+```
+
+---
+
+## 4. Backend Deep Dive (`backend/`)
+
+### 4.1 Framework & Core Dependencies
+- **FastAPI**: Asynchronous web framework with automatic OpenAPI documentation.
+- **Uvicorn**: ASGI server.
+- **SQLAlchemy**: ORM for database modeling and query execution.
+- **Docker SDK (`docker>=7.0.0`)**: Interacts with the host Docker daemon via `/var/run/docker.sock` to start, stop, monitor, stream logs, and execute commands inside containers.
+- **psutil**: Gathers whole-host CPU, RAM, disk usage, disk read/write rates, and network I/O.
+- **PyYAML**: Dynamically updates ports in `docker-compose.yml`.
+- **Alembic**: Database schema migrations.
+
+### 4.2 Database Models (`backend/database.py`)
+- **`RoadOverride`** (`road_overrides` table):
+  | Column | Type | Purpose |
+  |---|---|---|
+  | `id` | `Integer` (PK) | Auto-increment primary key |
+  | `from_node` | `String` (Indexed) | Starting OSM node ID (or comma-separated list of nodes) |
+  | `to_node` | `String` (Indexed) | Ending OSM node ID |
+  | `speed_kmh` | `Float` | Adjusted speed in km/h |
+  | `is_closed` | `Boolean` | Flag indicating road is completely closed (`1 km/h` heavy penalty) |
+  | `is_bidirectional` | `Boolean` | If true, override applies to both `from->to` and `to->from` |
+  | `reason` | `String` (Nullable) | User-entered explanation (e.g. "Construction", "Flooding") |
+  | `lat`, `lng` | `Float` (Nullable) | Geographic coordinates of the segment center |
+  | `geometry` | `String` (Nullable) | Serialized GeoJSON segment geometry |
+  | `road_name` | `String` (Nullable) | Street or highway name (e.g. "Main St") |
+  | `city_name` | `String` (Nullable) | City / locality name |
+  | `created_at` | `DateTime` | UTC timestamp of when override was created |
+
+- **`User`** (`users` table):
+  | Column | Type | Purpose |
+  |---|---|---|
+  | `id` | `Integer` (PK) | Primary key |
+  | `username` | `String` (Unique, Indexed) | Username (Default: `admin`) |
+  | `password` | `String` | Password (Default: `admin`) |
+  | `recovery_code` | `String` (Nullable) | Reset token (Default: `123456`) |
+
+### 4.3 Database Initialization & Migrations
+On startup (`@app.on_event("startup")`):
+1. `Base.metadata.create_all(bind=engine)` creates tables if they do not exist.
+2. Checks if `alembic_version` exists in the database. If absent, executes `alembic stamp head`.
+3. Runs `alembic upgrade head`.
+4. Seeds the default `admin` user (`admin` / `admin` / `123456`) if missing.
+
+### 4.4 Complete Backend REST API Reference
+
+#### Authentication
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/auth/login` | Authenticates username & password. |
+| `POST` | `/auth/change-password` | Updates password if old password matches. |
+| `POST` | `/auth/recover-password` | Resets password using `recovery_code`. |
+
+#### Road Overrides (Hot-Swapping)
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/overrides` | Retrieves all active road overrides from DB. |
+| `POST` | `/overrides` | Inserts a new road override and schedules background `rebuild_osrm_data`. |
+| `POST` | `/overrides/bulk` | Inserts multiple overrides and schedules background `rebuild_osrm_data`. |
+| `DELETE` | `/overrides/{override_id}` | Removes an override and schedules background `rebuild_osrm_data`. |
+
+#### OSRM & Deployment Lifecycle
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/system/merge` | **Fresh Deployment:** Downloads OSM PBFs, merges via `osmium-tool`, compiles graphs (`extract`, `partition`, `customize`), backs up graphs, recreates containers. |
+| `POST` | `/system/update` | **Zero-Downtime Update:** Downloads new state PBFs, merges, compiles graphs, and hot-swaps active memory using `osrm-datastore` without restarting containers. |
+| `POST` | `/system/deploy` | Rebuilds and launches OSRM containers for given ports. |
+| `GET` | `/system/logs` | Reads `/data/deploy.log` line-by-line for live frontend build tracking. |
+| `POST` | `/system/bootstrap` | Checks dependencies, Docker connectivity, map files, and container states. |
+
+#### Docker & Telemetry
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/system/metrics` | Host telemetry: CPU %, RAM %, Disk usage %, Disk read/write rates, Net in/out rates. |
+| `GET` | `/system/db-status` | Tests database connectivity with `SELECT 1`. |
+| `GET` | `/system/docker` | Container statuses, ports, started timestamps, active states, and log file sizes. |
+| `GET` | `/system/docker/{profile}/stats` | Live Docker stats for `car` or `foot` (CPU %, memory usage, I/O). |
+| `GET` | `/system/docker/{profile}/logs` | Tail last 50 lines of logs for specified container. |
+| `POST` | `/system/docker/{profile}/start` | Starts specified container. |
+| `POST` | `/system/docker/{profile}/stop` | Stops specified container. |
+| `POST` | `/system/docker/{profile}/clear_logs` | Truncates container JSON log file via ephemeral Alpine mount. |
+| `POST` | `/system/docker/nominatim/restart` | Restarts Nominatim container. |
+| `POST` | `/system/docker/pelias/install` | Triggers Pelias index recreation and OSM import. |
+| `GET` | `/system/docker/nominatim/logs` | Tails last 100 log lines from Nominatim. |
+| `GET` | `/system/docker/pelias/logs` | Tails last 100 log lines from Pelias. |
+| `POST` | `/system/docker/remove-all` | Stops & removes all RouteOps containers and wipes `/data` (except `speeds.csv`). |
+| `POST` | `/system/exec` | Runs sanitized `docker` CLI command and pipes output to `deploy.log`. |
+
+#### API Call Analytics
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/system/api-calls/log` | Logs an API call (used by frontend for geocoding tracking). |
+| `GET` | `/system/api-calls` | Aggregates and returns recent API calls parsed from OSRM/Pelias container logs and `/data/api_calls.json`. |
+
+### 4.5 The OSRM Build & Hot-Swap Lifecycle
+1. **Speed Penalties Export:** Database entries in `road_overrides` are written to `/data/speeds.csv` format:  
+   `<from_node>,<to_node>,<speed_integer>`  
+   *(If `is_closed == true`, speed is set to `1` km/h to heavily penalize routing).*
+2. **Graph Compilation (MLD Algorithm):**
+   - `osrm-extract -p /opt/{profile}.lua /data/{profile}.osm.pbf`
+   - `osrm-partition /data/{profile}.osrm`
+   - Pristine backup copy saved to `/data/backup_{profile}/`
+   - `osrm-customize /data/{profile}.osrm --segment-speed-file /data/speeds.csv`
+3. **Execution with Shared Memory:**
+   - Container runs `osrm-datastore /data/{profile}.osrm`
+   - Spawns `osrm-routed --shared-memory=yes --algorithm mld`
+4. **Instant Road Override (No Downtime):**
+   - When an edit is added or removed, `rebuild_osrm_data()` rewrites `speeds.csv`.
+   - Copies pristine graph from `/data/backup_{profile}/` back to `/data/`.
+   - Runs `osrm-customize /data/{profile}.osrm --segment-speed-file /data/speeds.csv` inside running container via `container.exec_run()`.
+   - Runs `osrm-datastore /data/{profile}.osrm` inside running container to hot-swap shared memory blocks instantly.
+
+---
+
+## 5. Frontend Deep Dive (`frontend/`)
+
+### 5.1 Architecture & Libraries
+- **Framework:** React 19 + TypeScript + Vite 8.
+- **Routing:** React Router v7 (`react-router-dom`).
+- **Mapping:** Leaflet 1.9.4 and `react-leaflet` 5.0.0.
+- **Charts:** `recharts` 3.10.1 (smooth AreaCharts with gradient fills).
+- **Icons:** `lucide-react`.
+- **CSS Architecture:** Vanilla CSS design system (`index.css`) utilizing CSS custom properties for instant light/dark theme transitions, custom scrollbars, and glassmorphism panels.
+
+### 5.2 Roles & Permissions
+- **Admin:** Full access to configure engines, deploy maps, execute terminal commands, apply road overrides, and delete active edits.
+- **Guest:** Read-only access. The UI automatically disables:
+  - Deploy / Update buttons in `EngineSetup.tsx`
+  - Container Start / Stop / Clear Logs actions
+  - Road speed limit and road closure submission in `MapDisplay.tsx`
+  - Road override deletion buttons in `ActiveEdits.tsx`
+
+### 5.3 Detailed Component Architecture
+
+#### 1. `Login.tsx`
+- Dual-mode card: Sign In and Forgot Password / Account Recovery.
+- Includes quick **Guest Login** button (`role: 'guest'`).
+- Displays application version dynamically from `package.json`.
+
+#### 2. `Dashboard.tsx`
+- Top header with GeoOps branding, PostgreSQL/DB live status indicator, light/dark theme switcher, change password modal, and logout.
+- Hash-based tab navigation: `#setup` (Engines Setup), `#map` (Live Map), `#edits` (Active Edits).
+- Blocks navigation to Live Map while a background deployment is active (`dockerStatus.is_deploying`).
+- Fullscreen mode toggle that expands map/content across 100vw/100vh.
+
+#### 3. `EngineSetup.tsx`
+- **4 Engine Cards:**
+  - Car Routing Engine (`osrm-car`, default port 5001)
+  - Foot Routing Engine (`osrm-foot`, default port 5005)
+  - Nominatim Geocoder (`nominatim`, default port 8080)
+  - Pelias Search/Autocomplete (`pelias_api`, default port 4000)
+- Each card shows: Online/Offline status badge, uptime duration, installed states count (clickable popup to view list), log file size, 24-hour total API hits, service breakdown badges, average/min/max response times, failed request count, peak requests/minute, and last request timestamp.
+- **Live System Telemetry Charts:** Real-time graphs for CPU %, RAM %, Disk Read/Write rates, and Network In/Out rates.
+- **Console / Terminal Panel:**
+  - Multi-tab log viewer: Traffic Log, Deployment Log, Car Logs, Foot Logs, Nominatim Logs, Pelias Logs.
+  - Interactive CLI input allowing direct execution of `docker` commands.
+  - Fullscreen toggle for terminal view.
+- **Engine Configuration Modal:**
+  - Multi-tab state selector (`car`, `foot`, `nominatim`, `pelias`) allowing independent state selection per engine.
+  - Search filter across all 50 US states.
+  - Dual action buttons: "Update States (Zero Downtime)" and "Destroy Existing Containers & Deploy Fresh Setup".
+
+#### 4. `MapDisplay.tsx`
+- **Map Viewport:**
+  - Leaflet map with custom Google Maps-style markers (green start ring, red destination pin, blue numbered stop badges, red place marker, pulsating blue GPS user location dot).
+  - OpenStreetMap standard tiles and Esri World Imagery satellite layer switcher.
+  - Active state boundary outlines rendered via GeoJSON from `us-states.json`.
+- **Search & Directions Modes:**
+  - Search mode: Autocomplete input powered by `searchPlaces()`. Shows results list, zooms to location, and drops place pin with reverse geocoded details.
+  - Directions mode: Origin, Destination, and up to 8 Intermediate Stops.
+  - Profile toggle: Car vs Foot.
+  - Preferences: Avoid Tolls, Fastest vs Shortest route, Show Alternatives.
+- **Turn-by-Turn Navigation:** Collapsible step-by-step guidance list with maneuver directions (turn left, right, slight, sharp, straight, roundabouts, arrival) and distance/time per leg.
+- **Road Override & Closure Tool:**
+  - Right-click anywhere on a route polyline to open the Road Override modal.
+  - Detects nearest OSM node IDs from OSRM response annotations (`annotations.nodes`).
+  - Sets new speed limit (MPH converted to km/h) or marks road completely closed.
+  - Configurable directionality (one-way or bidirectional).
+  - Reverse geocodes road name and city automatically.
+  - Instantly dispatches to backend `POST /overrides`.
+- **Raw JSON Debugger:** Inspects and copies exact OSRM API URL, request payload, and raw JSON response.
+
+#### 5. `ActiveEdits.tsx`
+- Paginated grid (24 items per page) of all active road closures and speed adjustments.
+- State filter dropdown based on geographic bounding box calculations (`stateBounds.json`).
+- Search box filtering by reason, street name, city, node ID, or status ("closed" vs "speed").
+- Click any edit card to automatically navigate to the Live Map tab (`#map`) and zoom directly into the affected road segment.
+- Deletion modal to revert road overrides.
+
+#### 6. `geocoding.ts` (Unified Client)
+- **Multi-tiered Resilient Geocoding:**
+  1. Local Nominatim (`http://localhost:{port}/search`)
+  2. Local Pelias (`http://localhost:{port}/v1/autocomplete`)
+  3. Public Photon API (`https://photon.komoot.io/api/`)
+  4. Public OpenStreetMap Nominatim (`https://nominatim.openstreetmap.org/search`)
+- **Multi-tiered Reverse Geocoding:**
+  1. Local Nominatim (`/reverse`)
+  2. Local Pelias (`/v1/reverse`)
+  3. Public OSM Nominatim
+  4. BigDataCloud Client Reverse Geocoder
+  5. Photon Reverse
+- **Telemetry Hook:** Logs every geocode query and latency to backend `POST /system/api-calls/log`.
+
+---
+
+## 6. Data Directory Structure (`data/`)
+
+The `./data` directory is mounted into Docker containers as `/data`. It contains all runtime, graph, and log data:
+
+| File / Folder | Description |
+|---|---|
+| `active_states.json` | JSON dictionary mapping engine profile (`car`, `foot`, `nominatim`, `pelias`) to list of installed state slugs. |
+| `speeds.csv` | Comma-delimited file containing `<from_node>,<to_node>,<speed>` used by `osrm-customize`. |
+| `deploy.log` | Text log tracking current and past deployments, downloads, and merge steps. |
+| `api_calls.json` | Rolling buffer of up to 1,000 logged API calls with latencies and timestamps. |
+| `pelias.json` | Generated Pelias configuration specifying Elasticsearch host, indices, and OSM import path. |
+| `{state}.osm.pbf` | Downloaded OpenStreetMap protocol buffer files from Geofabrik. |
+| `car.osm.pbf`, `foot.osm.pbf` | Merged PBF files used as input for graph compilation. |
+| `car.osrm*`, `foot.osrm*` | Compiled OSRM MLD graph data files (`.cells`, `.ebg`, `.enw`, `.fileIndex`, `.hs`, `.mldgr`, `.nodes`, `.properties`, `.ramIndex`, `.timestamp`). |
+| `backup_car/`, `backup_foot/` | Pristine copies of graph files kept to allow re-applying `speeds.csv` cleanly. |
+
+---
+
+## 7. Docker Compose Environments
+
+### 7.1 Development (`docker-compose.yml`)
+- Backend mounted from `./backend` to `/app` with auto-reloading (`WATCHFILES_FORCE_POLLING=true`).
+- Frontend mounted from `./frontend` to `/app` with polling (`CHOKIDAR_USEPOLLING=true`) on port `5173`.
+- PostgreSQL/PostGIS database on port `5433:5432`.
+- Host Docker socket mounted at `/var/run/docker.sock`.
+- Host `/proc` mounted at `/host_proc:ro` for psutil metrics inside Linux containers.
+
+### 7.2 Production (`docker-compose.prod.yml`)
+- Backend runs standalone Dockerfile on port `5172:8000`.
+- Frontend multi-stage build: compiles Vite SPA and serves static bundle via Nginx on port `80:80`.
+- Nginx proxies `/api/*` requests directly to backend container at `http://backend:8000/`.
+- PostgreSQL/PostGIS on port `5433:5432` with persistent `db_data` volume.
+
+### 7.3 Geocoding Stack (`docker-compose.geocoding.yml`)
+- **`nominatim`** (`mediagis/nominatim:5.3`): Port `8080:8080`, 2GB shared memory, auto-imports `/data/nominatim.osm.pbf`.
+- **`pelias_elasticsearch`** (`pelias/elasticsearch:7.17.15`): Port `9200:9200`, single-node cluster.
+- **`pelias_schema`** (`pelias/schema:master`): Ephemeral container to create Elasticsearch index.
+- **`pelias_api`** (`pelias/api:master`): Node.js API server on port `4000:4000`.
+- **`pelias_osm_importer`** (`pelias/openstreetmap:master`): Imports OSM data into Elasticsearch (`profiles: [tools]`).
+
+---
+
+## 8. Installation & Deployment Procedures
+
+### 8.1 Fresh Install vs Update
+The platform provides automated dual-mode scripts:
+- **Windows:** `setup-windows.ps1`
+- **Ubuntu / Debian:** `setup-ubuntu.sh`
+- **CentOS / RHEL / Alma:** `setup-centos.sh`
+
+When run, the scripts prompt:
+1. **Option 1 (Fresh Install - Destructive):**
+   - Completely tears down all containers, dangling images, and volumes matching `routeops` and `osrm`.
+   - Wipes `/data/*` and deletes `backend/osrm_portal.db`.
+   - Runs `python install.py`, which checks port availability (`5173`, `5172`, `5433`, `5001`, `5005`), prompts for new ports if busy, and launches `docker-compose.prod.yml`.
+2. **Option 2 (Update Existing Deployment - Safe):**
+   - Runs `git pull origin main`.
+   - Executes `docker compose -f docker-compose.prod.yml up -d --build`.
+   - Runs `docker image prune -f`.
+   - **Preserves all map data, database overrides, and user accounts.**
+
+### 8.2 Default Ports Matrix
+| Service | Default Port | Configurable? |
+|---|---|---|
+| Frontend UI (Production) | `80` | Yes (in `docker-compose.prod.yml`) |
+| Frontend UI (Dev) | `5173` | Yes (in `docker-compose.yml`) |
+| Backend API (Production) | `5172` (Host) -> `8000` (Container) | Yes |
+| Backend API (Dev) | `8000` | Yes |
+| PostgreSQL / PostGIS | `5433` (Host) -> `5432` (Container) | Yes |
+| OSRM Car Engine | `5001` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) |
+| OSRM Foot Engine | `5005` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) |
+| Nominatim Geocoding | `8080` | Yes (via UI & compose) |
+| Pelias API | `4000` | Yes (via UI & compose) |
+| Pelias Elasticsearch | `9200` | Fixed internal |
+
+### 8.3 Default Credentials
+| Attribute | Value |
+|---|---|
+| Username | `admin` |
+| Password | `admin` |
+| Recovery Code | `123456` |
+| Guest Access | Available via "Guest Login" on sign-in screen (read-only) |
+
+---
+
+## 9. Utility & Patch Scripts Reference
+
+| Script | Purpose |
+|---|---|
+| `install.py` | Cross-platform Python installer with socket-based port availability checks and automatic file patching. |
+| `patch.py` | Modifies `process_merge` and `process_update` in `backend/main.py` to support per-engine dictionary state structures. |
+| `patch_main.py` | Updates Nominatim and Pelias container recreation routines to bind dynamic host ports. |
+| `patch_frontend.py` | Injects per-engine modal tabs (`car`, `foot`, `nominatim`, `pelias`) into `EngineSetup.tsx`. |
+| `patch_map.py` | Injects geocoding tabs, search input, and result pins into `MapDisplay.tsx`. |
+| `pelias_test.py` | Standalone diagnostics script testing Elasticsearch readiness and Pelias schema creation. |
+| `test_osm.py` | Standalone script testing the `pelias/openstreetmap` importer. |
+| `frontend/update_guest.py` | Audits and injects `role === "guest"` disabled guards on mutative buttons. |
+| `backend/test_logs.py` | Verifies container log clearing via Alpine volume mounting. |
+| `backend/test_mount.py` | Tests read access to `/var/lib/docker/containers`. |
+
+---
+
+## 10. Operational Considerations & Best Practices
+
+1. **Hardware & Resource Requirements:**
+   - Extracting and partitioning large US states (e.g., California, Texas, New York) is CPU and memory intensive.
+   - Compiling multi-state regions requires at least **8 GB to 16 GB of RAM**.
+   - Running natively on Linux is significantly faster than Windows WSL2 due to disk I/O throughput.
+2. **Shared Memory (`shm_size` / `/dev/shm`):**
+   - OSRM uses shared memory (`osrm-datastore`) for zero-downtime routing. Containers are launched with `ipc_mode="shareable"`.
+   - Nominatim requires `shm_size: 2g` to avoid PostgreSQL shared memory exhaustion during indexing.
+3. **Log Rotation & File Sizes:**
+   - Long-running OSRM and geocoding containers produce high volumes of request logs.
+   - The UI provides **Clear Logs** buttons which mount the container's log file into an ephemeral Alpine container and truncate it (`cat /dev/null > /host_log`) without terminating the container.
+4. **Database Safety & Head Stamping:**
+   - When deploying on a fresh environment, Alembic automatically runs `alembic stamp head` followed by `alembic upgrade head` in `on_startup()`, preventing version collision errors.
