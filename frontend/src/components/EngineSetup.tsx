@@ -115,6 +115,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
 
     const [searchQuery, setSearchQuery] = useState('');
     const [showModal, setShowModal] = useState(false);
+    const [modalPort, setModalPort] = useState<string>('5001');
+    const showModalRef = useRef(showModal);
+    useEffect(() => {
+        showModalRef.current = showModal;
+    }, [showModal]);
     const [carLogs, setCarLogs] = useState<string[]>([]);
     const [footLogs, setFootLogs] = useState<string[]>([]);
     const [nominatimLogs, setNominatimLogs] = useState<string[]>([]);
@@ -151,6 +156,27 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         });
     };
 
+    const handleSelectAll = () => {
+        const visibleStates = US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(s => s.id);
+        setSelectedStates(prev => {
+            const currentTabStates = prev[modalTab] || [];
+            const combined = Array.from(new Set([...currentTabStates, ...visibleStates]));
+            return { ...prev, [modalTab]: combined };
+        });
+    };
+
+    const handleUnselectAll = () => {
+        if (searchQuery.trim()) {
+            const visibleStateIds = new Set(US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(s => s.id));
+            setSelectedStates(prev => {
+                const currentTabStates = prev[modalTab] || [];
+                return { ...prev, [modalTab]: currentTabStates.filter(id => !visibleStateIds.has(id)) };
+            });
+        } else {
+            setSelectedStates(prev => ({ ...prev, [modalTab]: [] }));
+        }
+    };
+
     useEffect(() => {
         const fetchMetrics = async () => {
             try {
@@ -180,10 +206,12 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                 if (res.ok) {
                     const data = await res.json();
                     setDockerStatus(data);
-                    if (data.car_port) setCarPort(data.car_port);
-                    if (data.foot_port) setFootPort(data.foot_port);
-                    if (data.nominatim_port) setNominatimPort(data.nominatim_port);
-                    if (data.pelias_port) setPeliasPort(data.pelias_port);
+                    if (!showModalRef.current) {
+                        if (data.car_port) setCarPort(data.car_port);
+                        if (data.foot_port) setFootPort(data.foot_port);
+                        if (data.nominatim_port) setNominatimPort(data.nominatim_port);
+                        if (data.pelias_port) setPeliasPort(data.pelias_port);
+                    }
                     
                     if (data.active_states) {
                         if (Array.isArray(data.active_states)) {
@@ -490,7 +518,21 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
 
     const renderConfigButton = (profile: 'car' | 'foot' | 'nominatim' | 'pelias') => {
         return (
-            <button disabled={role === "guest" || isDeploying} onClick={() => { setModalTab(profile); setSelectedStates(activeStates); setShowModal(true); }} style={{ background: 'var(--panel-inner-bg)', color: 'var(--text-primary)', border: '1px solid var(--panel-border)', padding: '4px 12px', borderRadius: 0, fontSize: '11px', cursor: role === "guest" || isDeploying ? "not-allowed" : "pointer", opacity: role === "guest" || isDeploying ? 0.5 : 1, transition: 'background 0.2s', display: 'flex', alignItems: 'center', gap: '4px' }} onMouseOver={e => { if(!isDeploying && role !== "guest") e.currentTarget.style.background = 'var(--panel-border)' }} onMouseOut={e => { if(!isDeploying && role !== "guest") e.currentTarget.style.background = 'var(--panel-inner-bg)' }} title="Configure Profile">
+            <button
+                disabled={role === "guest" || isDeploying}
+                onClick={() => {
+                    setModalTab(profile);
+                    setSelectedStates(activeStates);
+                    const currentPort = (dockerStatus as any)?.[`${profile}_port`] ||
+                        (profile === 'car' ? carPort : profile === 'foot' ? footPort : profile === 'nominatim' ? nominatimPort : peliasPort);
+                    setModalPort(String(currentPort));
+                    setShowModal(true);
+                }}
+                style={{ background: 'var(--panel-inner-bg)', color: 'var(--text-primary)', border: '1px solid var(--panel-border)', padding: '4px 12px', borderRadius: 0, fontSize: '11px', cursor: role === "guest" || isDeploying ? "not-allowed" : "pointer", opacity: role === "guest" || isDeploying ? 0.5 : 1, transition: 'background 0.2s', display: 'flex', alignItems: 'center', gap: '4px' }}
+                onMouseOver={e => { if(!isDeploying && role !== "guest") e.currentTarget.style.background = 'var(--panel-border)' }}
+                onMouseOut={e => { if(!isDeploying && role !== "guest") e.currentTarget.style.background = 'var(--panel-inner-bg)' }}
+                title="Configure Profile"
+            >
                 <Settings size={12} /> Configure
             </button>
         );
@@ -502,6 +544,18 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         setActiveStates(selectedStates);
         setViewMode('deployment');
         setDeployLogs([]);
+
+        const enteredPort = parseInt(modalPort, 10);
+        const effectiveCarPort = modalTab === 'car' ? (enteredPort || carPort || 5001) : (carPort || 5001);
+        const effectiveFootPort = modalTab === 'foot' ? (enteredPort || footPort || 5005) : (footPort || 5005);
+        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 8080) : (nominatimPort || 8080);
+        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 4000) : (peliasPort || 4000);
+
+        setCarPort(effectiveCarPort);
+        setFootPort(effectiveFootPort);
+        setNominatimPort(effectiveNomPort);
+        setPeliasPort(effectivePelPort);
+
         const engines = {
             car: modalTab === 'car',
             foot: modalTab === 'foot',
@@ -512,7 +566,15 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
             await fetch(`/api/system/merge`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, nominatim_port: nominatimPort, pelias_port: peliasPort, force_download: false, engines })
+                body: JSON.stringify({
+                    states: selectedStates,
+                    car_port: effectiveCarPort,
+                    foot_port: effectiveFootPort,
+                    nominatim_port: effectiveNomPort,
+                    pelias_port: effectivePelPort,
+                    force_download: false,
+                    engines
+                })
             });
             setMergeStatus('Deployment initiated. See logs for progress.');
         } catch (e) { }
@@ -524,6 +586,18 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         setActiveStates(selectedStates);
         setViewMode('deployment');
         setDeployLogs([]);
+
+        const enteredPort = parseInt(modalPort, 10);
+        const effectiveCarPort = modalTab === 'car' ? (enteredPort || carPort || 5001) : (carPort || 5001);
+        const effectiveFootPort = modalTab === 'foot' ? (enteredPort || footPort || 5005) : (footPort || 5005);
+        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 8080) : (nominatimPort || 8080);
+        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 4000) : (peliasPort || 4000);
+
+        setCarPort(effectiveCarPort);
+        setFootPort(effectiveFootPort);
+        setNominatimPort(effectiveNomPort);
+        setPeliasPort(effectivePelPort);
+
         const engines = {
             car: modalTab === 'car',
             foot: modalTab === 'foot',
@@ -534,7 +608,15 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
             await fetch(`/api/system/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ states: selectedStates, car_port: carPort, foot_port: footPort, nominatim_port: nominatimPort, pelias_port: peliasPort, force_download: false, engines })
+                body: JSON.stringify({
+                    states: selectedStates,
+                    car_port: effectiveCarPort,
+                    foot_port: effectiveFootPort,
+                    nominatim_port: effectiveNomPort,
+                    pelias_port: effectivePelPort,
+                    force_download: false,
+                    engines
+                })
             });
             setMergeStatus('Zero-Downtime Update initiated. See logs for progress.');
         } catch (e) { }
@@ -945,11 +1027,24 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                     ))
                             ) : (
                                 deployLogs.length === 0 ? <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>Waiting for deployment logs...</div> :
-                                    deployLogs.map((logLine, idx) => (
-                                        <div key={idx} style={{ marginBottom: '4px', whiteSpace: 'pre-wrap', color: logLine.toLowerCase().includes('failed') || logLine.toLowerCase().includes('error') ? '#ef4444' : 'var(--text-primary)' }}>
-                                            {logLine}
-                                        </div>
-                                    ))
+                                    deployLogs.map((logLine, idx) => {
+                                        const lower = logLine.toLowerCase();
+                                        let lineColor = 'var(--text-primary)';
+                                        if (lower.includes('failed_records=0') || lower.includes('0 failed') || lower.includes('0 error')) {
+                                            lineColor = 'var(--text-primary)';
+                                        } else if (lower.includes('deployment complete') || lower.includes('finished!') || lower.includes('success')) {
+                                            lineColor = '#10b981';
+                                        } else if (lower.includes('failed') || lower.includes('error') || lower.includes('fatal') || lower.includes('exception')) {
+                                            lineColor = '#ef4444';
+                                        } else if (lower.includes('warning') || lower.includes('warn:')) {
+                                            lineColor = '#f59e0b';
+                                        }
+                                        return (
+                                            <div key={idx} style={{ marginBottom: '4px', whiteSpace: 'pre-wrap', color: lineColor }}>
+                                                {logLine}
+                                            </div>
+                                        );
+                                    })
                             )}
                         </div>
                         {viewMode === 'deployment' && (
@@ -979,7 +1074,49 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                             <div style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                                 <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                                        <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0 }}>1. Select States</h3>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                                            <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0 }}>1. Select States</h3>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <button
+                                                    type="button"
+                                                    disabled={role === "guest"}
+                                                    onClick={handleSelectAll}
+                                                    style={{
+                                                        background: 'rgba(59,130,246,0.1)',
+                                                        border: '1px solid rgba(59,130,246,0.3)',
+                                                        color: '#60a5fa',
+                                                        padding: '4px 10px',
+                                                        fontSize: '11px',
+                                                        fontWeight: 500,
+                                                        cursor: role === "guest" ? 'not-allowed' : 'pointer',
+                                                        transition: 'all 0.15s'
+                                                    }}
+                                                    onMouseOver={e => { if (role !== "guest") e.currentTarget.style.background = 'rgba(59,130,246,0.2)' }}
+                                                    onMouseOut={e => { if (role !== "guest") e.currentTarget.style.background = 'rgba(59,130,246,0.1)' }}
+                                                >
+                                                    Select All
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={role === "guest"}
+                                                    onClick={handleUnselectAll}
+                                                    style={{
+                                                        background: 'rgba(255,255,255,0.03)',
+                                                        border: '1px solid var(--panel-border)',
+                                                        color: '#9ca3af',
+                                                        padding: '4px 10px',
+                                                        fontSize: '11px',
+                                                        fontWeight: 500,
+                                                        cursor: role === "guest" ? 'not-allowed' : 'pointer',
+                                                        transition: 'all 0.15s'
+                                                    }}
+                                                    onMouseOver={e => { if (role !== "guest") { e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.borderColor = 'rgba(239,68,68,0.3)'; } }}
+                                                    onMouseOut={e => { if (role !== "guest") { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; e.currentTarget.style.color = '#9ca3af'; e.currentTarget.style.borderColor = 'var(--panel-border)'; } }}
+                                                >
+                                                    Unselect All
+                                                </button>
+                                            </div>
+                                        </div>
                                         <div style={{ background: 'var(--panel-inner-bg)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--panel-border)', width: '250px' }}>
                                             <Search size={14} color="#6b7280" />
                                             <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search states..." style={{ background: 'transparent', border: 'none', color: 'white', width: '100%', outline: 'none', fontSize: '12px' }} />
@@ -988,9 +1125,14 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                     {/* Tabs removed to isolate configuration to a single engine at a time */}
 
                                     {(selectedStates[modalTab] || []).length > 0 && (
-                                        <div style={{ marginBottom: '12px', fontSize: '12px', color: '#3b82f6', background: 'rgba(59,130,246,0.1)', padding: '8px 12px', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', justifyContent: 'space-between' }}>
-                                            <span><strong>Selected ({(selectedStates[modalTab] || []).length}):</strong> {(selectedStates[modalTab] || []).map((s: string) => US_STATES.find(us => us.id === s)?.name).join(', ')}</span>
-                                            <button disabled={role === "guest"} onClick={() => setSelectedStates(prev => ({...prev, [modalTab]: []}))} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600 }}>Clear {modalTab.toUpperCase()}</button>
+                                        <div style={{ marginBottom: '12px', fontSize: '12px', color: '#3b82f6', background: 'rgba(59,130,246,0.1)', padding: '8px 12px', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: '12px' }}>
+                                                <strong>Selected ({(selectedStates[modalTab] || []).length}): </strong>
+                                                {(selectedStates[modalTab] || []).length === US_STATES.length
+                                                    ? `All States Selected (${US_STATES.length})`
+                                                    : (selectedStates[modalTab] || []).map((s: string) => US_STATES.find(us => us.id === s)?.name).join(', ')}
+                                            </span>
+                                            <button disabled={role === "guest"} onClick={() => setSelectedStates(prev => ({...prev, [modalTab]: []}))} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600, flexShrink: 0 }}>Clear {modalTab.toUpperCase()}</button>
                                         </div>
                                     )}
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: '4px', alignContent: 'start' }}>
@@ -1017,30 +1159,20 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 <div style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '24px', marginTop: '24px', flexShrink: 0 }}>
                                     <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0, marginBottom: '16px' }}>2. Network Ports</h3>
                                     <div style={{ display: 'flex', gap: '16px' }}>
-                                        {modalTab === 'car' && (
-                                            <div style={{ flex: 1 }}>
-                                                <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>Car Profile Port</label>
-                                                <input type="number" value={carPort} onChange={e => setCarPort(parseInt(e.target.value) || 5001)} style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }} />
-                                            </div>
-                                        )}
-                                        {modalTab === 'foot' && (
-                                            <div style={{ flex: 1 }}>
-                                                <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>Foot Profile Port</label>
-                                                <input type="number" value={footPort} onChange={e => setFootPort(parseInt(e.target.value) || 5005)} style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }} />
-                                            </div>
-                                        )}
-                                        {modalTab === 'nominatim' && (
-                                            <div style={{ flex: 1 }}>
-                                                <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>Nominatim Port</label>
-                                                <input type="number" value={nominatimPort} onChange={e => setNominatimPort(parseInt(e.target.value) || 8080)} style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }} />
-                                            </div>
-                                        )}
-                                        {modalTab === 'pelias' && (
-                                            <div style={{ flex: 1 }}>
-                                                <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>Pelias Port</label>
-                                                <input type="number" value={peliasPort} onChange={e => setPeliasPort(parseInt(e.target.value) || 4000)} style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }} />
-                                            </div>
-                                        )}
+                                        <div style={{ flex: 1 }}>
+                                            <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                                {modalTab.charAt(0).toUpperCase() + modalTab.slice(1)} Profile Port
+                                            </label>
+                                            <input
+                                                type="text"
+                                                inputMode="numeric"
+                                                pattern="[0-9]*"
+                                                value={modalPort}
+                                                onChange={e => setModalPort(e.target.value.replace(/\D/g, ''))}
+                                                placeholder={modalTab === 'car' ? '5001' : modalTab === 'foot' ? '5005' : modalTab === 'nominatim' ? '8080' : '4000'}
+                                                style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }}
+                                            />
+                                        </div>
                                     </div>
                                 </div>
 

@@ -1,8 +1,8 @@
-# RouteOps / GeoOps v2.3.0 - Comprehensive Project Context
+# RouteOps / GeoOps v2.4.0 - Comprehensive Project Context
 
 > **Project Name:** RouteOps (frontend branding: **GeoOps**)  
 > **Repository:** `umaramin1985-prog/RouteOps`  
-> **Current Version:** `2.3.0`  
+> **Current Version:** `2.4.0`  
 > **Architecture:** Full-stack microservices (FastAPI backend + React/Vite frontend + OSRM routing engines + Nominatim & Pelias geocoders + PostgreSQL/PostGIS / SQLite database + Docker SDK)
 
 ---
@@ -17,7 +17,7 @@ The platform provides a modern command-center interface to:
 3. **Perform Zero-Downtime Hot-Swapping Road Overrides:** Click any road segment on the live map to enforce custom speed limits or full road closures. Changes are instantly injected into the routing graph via `osrm-customize` and `osrm-datastore` without restarting containers.
 4. **Inspect & Manage Road Overrides:** The **Active Edits** tab provides a paginated, searchable grid of all active road closures and speed adjustments, with geographic coordinate filtering, road/city metadata, and one-click removal.
 5. **Interactive Live Navigation:** Multi-stop waypoints (up to 8 intermediate stops), turn-by-turn navigation instructions with maneuver icons, toll avoidance filtering, alternative route calculations, GPS tracking ("Locate Me"), satellite tile switching, and raw JSON request/response inspection.
-6. **Dual Geocoding & Address Autocomplete:** Integrated search powered by local **Nominatim** and **Pelias** Docker services, with resilient automated fallbacks to **Photon (Komoot)**, **OpenStreetMap Nominatim**, and **BigDataCloud**.
+6. **Strictly Self-Hosted Local Geocoding & Address Autocomplete:** Integrated address search, POI discovery, and reverse geocoding powered strictly and exclusively by installed local **Pelias** and **Nominatim** Docker services. All third-party external public web fallbacks (Photon, OSM public Nominatim, BigDataCloud) are completely disabled for 100% self-hosted privacy, offline reliability, and air-gapped compliance.
 7. **Real-Time Telemetry & Operations Command:** Live CPU, RAM, Disk I/O, Network throughput charts (`recharts`), container health checks, API hit counters, latency tracking, Docker container log streaming, and an embedded Docker terminal.
 
 ---
@@ -89,7 +89,7 @@ The platform provides a modern command-center interface to:
 c:\Code\OSRM 2\
 ├── .gitignore                      # Ignores node_modules, __pycache__, data/, .env, build/
 ├── LICENSE                         # MIT License
-├── README.md                       # High-level project documentation, v2.3.0 release notes
+├── README.md                       # High-level project documentation, v2.4.0 release notes
 ├── docker-compose.yml              # Dev compose: backend (:8000), frontend (:5173), postgis db (:5433)
 ├── docker-compose.prod.yml         # Production compose: backend (:5172), frontend (:80), postgis db (:5433)
 ├── docker-compose.geocoding.yml    # Geocoding compose: Nominatim (:8080) + Pelias (ES:9200, API:4000)
@@ -326,6 +326,7 @@ On startup (`@app.on_event("startup")`):
   - Fullscreen toggle for terminal view.
 - **Engine Configuration Modal:**
   - Multi-tab state selector (`car`, `foot`, `nominatim`, `pelias`) allowing independent state selection per engine.
+  - Quick **Select All** and **Deselect All** buttons for multi-state batch configuration.
   - Search filter across all 50 US states.
   - Dual action buttons: "Update States (Zero Downtime)" and "Destroy Existing Containers & Deploy Fresh Setup".
 
@@ -335,8 +336,8 @@ On startup (`@app.on_event("startup")`):
   - OpenStreetMap standard tiles and Esri World Imagery satellite layer switcher.
   - Active state boundary outlines rendered via GeoJSON from `us-states.json`.
 - **Search & Directions Modes:**
-  - Search mode: Autocomplete input powered by `searchPlaces()`. Shows results list, zooms to location, and drops place pin with reverse geocoded details.
-  - Directions mode: Origin, Destination, and up to 8 Intermediate Stops.
+  - Search mode: Autocomplete input powered strictly by installed local Pelias or Nominatim (`searchPlaces()`). Features a real-time engine badge (`Pelias` or `Nominatim` with green online / red offline indicator), dynamic placeholder hints, and helpful empty-result notifications.
+  - Directions mode: Origin, Destination, and up to 8 Intermediate Stops with local reverse-geocoded waypoint addresses.
   - Profile toggle: Car vs Foot.
   - Preferences: Avoid Tolls, Fastest vs Shortest route, Show Alternatives.
 - **Turn-by-Turn Navigation:** Collapsible step-by-step guidance list with maneuver directions (turn left, right, slight, sharp, straight, roundabouts, arrival) and distance/time per leg.
@@ -345,7 +346,7 @@ On startup (`@app.on_event("startup")`):
   - Detects nearest OSM node IDs from OSRM response annotations (`annotations.nodes`).
   - Sets new speed limit (MPH converted to km/h) or marks road completely closed.
   - Configurable directionality (one-way or bidirectional).
-  - Reverse geocodes road name and city automatically.
+  - Reverse geocodes road name and city automatically via active local geocoding engine.
   - Instantly dispatches to backend `POST /overrides`.
 - **Raw JSON Debugger:** Inspects and copies exact OSRM API URL, request payload, and raw JSON response.
 
@@ -356,19 +357,19 @@ On startup (`@app.on_event("startup")`):
 - Click any edit card to automatically navigate to the Live Map tab (`#map`) and zoom directly into the affected road segment.
 - Deletion modal to revert road overrides.
 
-#### 6. `geocoding.ts` (Unified Client)
-- **Multi-tiered Resilient Geocoding:**
-  1. Local Nominatim (`http://localhost:{port}/search`)
-  2. Local Pelias (`http://localhost:{port}/v1/autocomplete`)
-  3. Public Photon API (`https://photon.komoot.io/api/`)
-  4. Public OpenStreetMap Nominatim (`https://nominatim.openstreetmap.org/search`)
-- **Multi-tiered Reverse Geocoding:**
-  1. Local Nominatim (`/reverse`)
-  2. Local Pelias (`/v1/reverse`)
-  3. Public OSM Nominatim
-  4. BigDataCloud Client Reverse Geocoder
-  5. Photon Reverse
-- **Telemetry Hook:** Logs every geocode query and latency to backend `POST /system/api-calls/log`.
+#### 6. `geocoding.ts` (Unified Local Client)
+- **Strictly Local Geocoding (`searchPlaces`):**
+  1. Local Pelias (`http://localhost:{port}/v1/autocomplete` and `/v1/search`)
+  2. Local Nominatim (`http://localhost:{port}/search`)
+  - Directs queries strictly to the active engine or running local instance.
+  - Returns `[]` without remote calls if no local record matches.
+- **Strictly Local Reverse Geocoding (`reverseGeocode`):**
+  1. Local Pelias (`/v1/reverse`)
+  2. Local Nominatim (`/reverse`)
+  - Resolves map clicks, marker drags, and context menu lookups purely from local containers.
+  - Falls back cleanly to coordinate string (`lat, lng`) if outside indexed areas.
+- **Zero Remote Dependencies:** All third-party public web APIs (Photon, OSM public Nominatim, BigDataCloud) have been eliminated for air-gapped security, zero external data leakage, and predictable offline reliability.
+- **Telemetry Hook:** Logs every geocode query, service type, and latency to backend `POST /system/api-calls/log`.
 
 ---
 
@@ -488,3 +489,28 @@ When run, the scripts prompt:
    - The UI provides **Clear Logs** buttons which mount the container's log file into an ephemeral Alpine container and truncate it (`cat /dev/null > /host_log`) without terminating the container.
 4. **Database Safety & Head Stamping:**
    - When deploying on a fresh environment, Alembic automatically runs `alembic stamp head` followed by `alembic upgrade head` in `on_startup()`, preventing version collision errors.
+
+---
+
+## 11. Release History & Changelog
+
+### v2.4.0 (Current)
+- **Strictly Local Geocoding & Reverse Geocoding:**
+  - Forward search (`searchPlaces`) and reverse geocoding (`reverseGeocode`) on the Live Map now strictly query installed local **Pelias** (`routeops-pelias-1` / port 4000) or **Nominatim** (`routeops-nominatim-1` / port 8080).
+  - Completely purged all third-party external public web fallbacks (Photon Komoot, OpenStreetMap public Nominatim, BigDataCloud) for full air-gapped compliance, self-hosted privacy, and offline stability.
+  - Replaced fallback mechanisms with raw coordinates (`lat, lng`) for points outside indexed boundaries.
+- **Live Map Geocoder Status & Indicators:**
+  - Added real-time badge in the Live Map search bar indicating the active local geocoding engine (`Pelias` or `Nominatim`) with live connectivity status (green online / red offline).
+  - Added helpful empty-state feedback in the search dropdown notifying users when queries yield no results in the installed local index.
+- **Pelias Deployment Log Visualizer Fix:**
+  - Resolved a false-positive styling bug in `EngineSetup.tsx` where normal OpenStreetMap indexing logs reporting `failed_records=0` turned the entire log console red.
+  - Added granular console highlighting with emerald green (`#10b981`) for completions and amber (`#f59e0b`) for warnings.
+- **Select / Deselect All States:**
+  - Added batch "Select All" and "Deselect All" options in the Engine Setup modal for rapid multi-state provisioning.
+- **Port Configuration Persistence:**
+  - Fixed an issue where custom-configured ports for routing and geocoding engines were reverting to default values upon saving or container reload.
+
+### v2.3.0
+- **Deployment Safety & Stability:** Global error boundaries in background deployment tasks to gracefully abort, clean up partial states, and unlock the UI on download/merge failures.
+- **Setup Script Aggressive Cleanup:** `Fresh Install` across setup scripts prunes orphaned containers, dangling images, and volumes.
+- **UI & UX Polish:** Removed double-scrollbars in modals, resolved phantom map boundaries, and prevented startup logs from prematurely disabling deployment controls.

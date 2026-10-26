@@ -1,6 +1,6 @@
-// Geocoding and reverse geocoding utility supporting local Pelias / Nominatim
-// with automatic telemetry reporting to backend API call statistics
-// and resilient fallbacks to Photon, BigDataCloud, and OpenStreetMap Nominatim.
+// Geocoding and reverse geocoding utility strictly restricted to local Pelias / Nominatim instances.
+// Automatic telemetry reporting to backend API call statistics.
+// All external/third-party public geocoding APIs (Photon, OSM public Nominatim, BigDataCloud) are disabled.
 
 export interface PlaceResult {
   id: string;
@@ -52,8 +52,8 @@ export async function recordApiCall(call: {
 }
 
 /**
- * Searches places/addresses using local engine if configured or online,
- * and falls back to Photon & Nominatim.
+ * Searches places/addresses strictly using installed local Pelias or Nominatim instances.
+ * If neither is available or no local results match, returns empty list without calling any external APIs.
  */
 export async function searchPlaces(
   query: string,
@@ -86,12 +86,16 @@ export async function searchPlaces(
   const activeEngine = options?.activeEngine || 'osrm';
   const docker = options?.dockerStatus;
 
+  const isPeliasAvailable = docker?.pelias === 'running' || docker?.pelias_port;
+  const isNominatimAvailable = docker?.nominatim === 'running' || docker?.nominatim_port;
+
   // Helper to query local Nominatim
   const tryLocalNominatim = async (): Promise<PlaceResult[] | null> => {
+    if (!isNominatimAvailable) return null;
     const port = docker?.nominatim_port || 8080;
     const t0 = performance.now();
     try {
-      const res = await fetch(`http://${hostname}:${port}/search?q=${encodeURIComponent(clean)}&format=json&addressdetails=1&limit=6`, { signal: AbortSignal.timeout(2000) });
+      const res = await fetch(`http://${hostname}:${port}/search?q=${encodeURIComponent(clean)}&format=json&addressdetails=1&limit=8`, { signal: AbortSignal.timeout(2500) });
       const latency = `${Math.round(performance.now() - t0)}ms`;
       recordApiCall({ profile: 'nominatim', service: 'search', latency, path: clean, status: res.status });
       if (res.ok) {
@@ -120,35 +124,50 @@ export async function searchPlaces(
     return null;
   };
 
-  // Helper to query local Pelias autocomplete
+  // Helper to query local Pelias
   const tryLocalPelias = async (): Promise<PlaceResult[] | null> => {
+    if (!isPeliasAvailable) return null;
     const port = docker?.pelias_port || 4000;
     const t0 = performance.now();
     try {
-      const res = await fetch(`http://${hostname}:${port}/v1/autocomplete?text=${encodeURIComponent(clean)}&size=6`, { signal: AbortSignal.timeout(2000) });
+      // 1. Try autocomplete first (ideal for prefix/typeahead search)
+      let res = await fetch(`http://${hostname}:${port}/v1/autocomplete?text=${encodeURIComponent(clean)}&size=8`, { signal: AbortSignal.timeout(2000) });
+      let data = res.ok ? await res.json() : null;
+
+      // 2. If autocomplete returned no features, try full search endpoint
+      if (!data?.features || data.features.length === 0) {
+        res = await fetch(`http://${hostname}:${port}/v1/search?text=${encodeURIComponent(clean)}&size=8`, { signal: AbortSignal.timeout(2500) });
+        if (res.ok) {
+          data = await res.json();
+        }
+      }
+
       const latency = `${Math.round(performance.now() - t0)}ms`;
-      recordApiCall({ profile: 'pelias', service: 'autocomplete', latency, path: clean, status: res.status });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.features?.length > 0) {
-          return data.features.map((f: any, idx: number) => ({
-            id: f.properties.id || `pelias-${idx}`,
-            title: f.properties.name || f.properties.label,
-            subtitle: f.properties.label || `${f.properties.locality || ''}, ${f.properties.region || ''}`,
+      recordApiCall({ profile: 'pelias', service: 'search', latency, path: clean, status: res.status });
+
+      if (data?.features?.length > 0) {
+        return data.features.map((f: any, idx: number) => {
+          const props = f.properties || {};
+          const title = props.name || props.label?.split(',')[0] || clean;
+          const subtitle = props.label || [props.locality, props.region].filter(Boolean).join(', ') || 'Local Pelias Result';
+          return {
+            id: props.id || props.gid || `pelias-${idx}`,
+            title,
+            subtitle,
             lat: f.geometry.coordinates[1],
             lng: f.geometry.coordinates[0],
-            type: f.properties.layer
-          }));
-        }
+            type: props.layer
+          };
+        });
       }
     } catch {
       const latency = `${Math.round(performance.now() - t0)}ms`;
-      recordApiCall({ profile: 'pelias', service: 'autocomplete', latency, path: clean, status: 500 });
+      recordApiCall({ profile: 'pelias', service: 'search', latency, path: clean, status: 500 });
     }
     return null;
   };
 
-  // 1. Order of trial based on activeEngine and container statuses
+  // Route to the appropriate installed engine
   if (activeEngine === 'nominatim') {
     const nomRes = await tryLocalNominatim();
     if (nomRes && nomRes.length > 0) return nomRes;
@@ -160,112 +179,40 @@ export async function searchPlaces(
     const nomRes = await tryLocalNominatim();
     if (nomRes && nomRes.length > 0) return nomRes;
   } else {
-    // Default 'osrm' mode: utilize whichever local geocoders are online
-    if (docker?.pelias === 'running' || docker?.pelias_port) {
+    // Default 'osrm' mode: utilize whichever local installed geocoders are running
+    if (isPeliasAvailable) {
       const pelRes = await tryLocalPelias();
       if (pelRes && pelRes.length > 0) return pelRes;
     }
-    if (docker?.nominatim === 'running' || docker?.nominatim_port) {
+    if (isNominatimAvailable) {
       const nomRes = await tryLocalNominatim();
       if (nomRes && nomRes.length > 0) return nomRes;
     }
   }
 
-  // 2. Photon Komoot open geocoding (fast, CORS-friendly, full address support)
-  try {
-    const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(clean)}&limit=6`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.features?.length > 0) {
-        return data.features.map((f: any, idx: number) => {
-          const props = f.properties || {};
-          const title = props.name || [props.housenumber, props.street].filter(Boolean).join(' ') || clean;
-          const subtitleParts = [
-            props.street,
-            props.city || props.town || props.village,
-            props.state,
-            props.country
-          ].filter(Boolean);
-          const subtitle = subtitleParts.join(', ') || props.country || 'Location';
-
-          return {
-            id: `${props.osm_type || 'f'}-${props.osm_id || idx}`,
-            title,
-            subtitle,
-            lat: f.geometry.coordinates[1],
-            lng: f.geometry.coordinates[0],
-            type: props.type || props.osm_key
-          };
-        });
-      }
-    }
-  } catch {
-    // Fallback to OSM Nominatim
-  }
-
-  // 3. OSM Nominatim fallback
-  try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(clean)}&format=json&addressdetails=1&limit=6`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        return data.map((item: any, idx: number) => ({
-          id: item.place_id ? String(item.place_id) : `nom-pub-${idx}`,
-          title: item.name || item.display_name.split(',')[0],
-          subtitle: item.display_name,
-          lat: parseFloat(item.lat),
-          lng: parseFloat(item.lon),
-          type: item.type
-        }));
-      }
-    }
-  } catch {
-    // Fallback failed
-  }
-
+  // Strictly NO external third-party fallbacks
   return [];
 }
 
 /**
- * Reverse geocodes coordinates to a human-readable address.
- * Resilient multi-provider strategy: local Nominatim -> local Pelias -> OSM Nominatim -> BigDataCloud -> Photon
+ * Reverse geocodes coordinates strictly from installed local Pelias or Nominatim instances.
+ * Strictly avoids any external public web APIs.
  */
 export async function reverseGeocode(
   lat: number,
   lng: number,
-  dockerStatus?: any
+  dockerStatus?: any,
+  activeEngine?: 'osrm' | 'nominatim' | 'pelias'
 ): Promise<ReverseGeocodeResult> {
   const hostname = window.location.hostname || 'localhost';
 
-  // 1. Try local Nominatim if running
-  const nomPort = dockerStatus?.nominatim_port || 8080;
-  if (dockerStatus?.nominatim === 'running' || dockerStatus?.nominatim_port) {
-    const t0 = performance.now();
-    try {
-      const res = await fetch(`http://${hostname}:${nomPort}/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`, { signal: AbortSignal.timeout(2000) });
-      const latency = `${Math.round(performance.now() - t0)}ms`;
-      recordApiCall({ profile: 'nominatim', service: 'reverse', latency, path: `${lat.toFixed(5)},${lng.toFixed(5)}`, status: res.status });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.display_name) {
-          const addr = data.address || {};
-          return {
-            formattedAddress: data.display_name,
-            road: addr.road || addr.street,
-            city: addr.city || addr.town || addr.village || addr.county,
-            state: addr.state
-          };
-        }
-      }
-    } catch {
-      const latency = `${Math.round(performance.now() - t0)}ms`;
-      recordApiCall({ profile: 'nominatim', service: 'reverse', latency, path: `${lat.toFixed(5)},${lng.toFixed(5)}`, status: 500 });
-    }
-  }
+  const isPeliasAvailable = dockerStatus?.pelias === 'running' || dockerStatus?.pelias_port;
+  const isNominatimAvailable = dockerStatus?.nominatim === 'running' || dockerStatus?.nominatim_port;
 
-  // 2. Try local Pelias reverse if running
-  const pelPort = dockerStatus?.pelias_port || 4000;
-  if (dockerStatus?.pelias === 'running' || dockerStatus?.pelias_port) {
+  // 1. Helper to reverse-geocode via local Pelias
+  const tryPeliasReverse = async (): Promise<ReverseGeocodeResult | null> => {
+    if (!isPeliasAvailable) return null;
+    const pelPort = dockerStatus?.pelias_port || 4000;
     const t0 = performance.now();
     try {
       const res = await fetch(`http://${hostname}:${pelPort}/v1/reverse?point.lat=${lat}&point.lon=${lng}&size=1`, { signal: AbortSignal.timeout(2000) });
@@ -277,8 +224,9 @@ export async function reverseGeocode(
           const props = data.features[0].properties || {};
           const road = props.street || props.name;
           const city = props.locality || props.county || props.region;
+          const formattedAddress = props.label || [road, city, props.region].filter(Boolean).join(', ') || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
           return {
-            formattedAddress: props.label || `${road || ''}, ${city || ''}`,
+            formattedAddress,
             road,
             city,
             state: props.region
@@ -289,69 +237,62 @@ export async function reverseGeocode(
       const latency = `${Math.round(performance.now() - t0)}ms`;
       recordApiCall({ profile: 'pelias', service: 'reverse', latency, path: `${lat.toFixed(5)},${lng.toFixed(5)}`, status: 500 });
     }
+    return null;
+  };
+
+  // 2. Helper to reverse-geocode via local Nominatim
+  const tryNominatimReverse = async (): Promise<ReverseGeocodeResult | null> => {
+    if (!isNominatimAvailable) return null;
+    const nomPort = dockerStatus?.nominatim_port || 8080;
+    const t0 = performance.now();
+    try {
+      const res = await fetch(`http://${hostname}:${nomPort}/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`, { signal: AbortSignal.timeout(2000) });
+      const latency = `${Math.round(performance.now() - t0)}ms`;
+      recordApiCall({ profile: 'nominatim', service: 'reverse', latency, path: `${lat.toFixed(5)},${lng.toFixed(5)}`, status: res.status });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.display_name) {
+          const addr = data.address || {};
+          return {
+            formattedAddress: data.display_name,
+            road: addr.road || addr.street || addr.pedestrian || addr.highway,
+            city: addr.city || addr.town || addr.village || addr.county,
+            state: addr.state
+          };
+        }
+      }
+    } catch {
+      const latency = `${Math.round(performance.now() - t0)}ms`;
+      recordApiCall({ profile: 'nominatim', service: 'reverse', latency, path: `${lat.toFixed(5)},${lng.toFixed(5)}`, status: 500 });
+    }
+    return null;
+  };
+
+  // Prioritize based on selected engine
+  if (activeEngine === 'nominatim') {
+    const nom = await tryNominatimReverse();
+    if (nom) return nom;
+    const pel = await tryPeliasReverse();
+    if (pel) return pel;
+  } else if (activeEngine === 'pelias') {
+    const pel = await tryPeliasReverse();
+    if (pel) return pel;
+    const nom = await tryNominatimReverse();
+    if (nom) return nom;
+  } else {
+    // In 'osrm' mode: try whichever local geocoder is running
+    if (isPeliasAvailable) {
+      const pel = await tryPeliasReverse();
+      if (pel) return pel;
+    }
+    if (isNominatimAvailable) {
+      const nom = await tryNominatimReverse();
+      if (nom) return nom;
+    }
   }
 
-  // 3. Try OSM Nominatim public reverse
-  try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.display_name) {
-        const addr = data.address || {};
-        const road = addr.road || addr.street || addr.pedestrian || addr.highway;
-        const city = addr.city || addr.town || addr.village || addr.suburb || addr.county;
-        return {
-          formattedAddress: data.display_name,
-          road,
-          city,
-          state: addr.state
-        };
-      }
-    }
-  } catch {}
-
-  // 4. Try BigDataCloud free client reverse geocoding API (fast, no CORS restriction)
-  try {
-    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.locality || data?.city || data?.principalSubdivision) {
-        const parts = [
-          data.locality || data.city,
-          data.principalSubdivision,
-          data.countryName
-        ].filter(Boolean);
-        return {
-          formattedAddress: parts.join(', '),
-          road: data.locality,
-          city: data.city || data.locality,
-          state: data.principalSubdivision
-        };
-      }
-    }
-  } catch {}
-
-  // 5. Try Photon reverse
-  try {
-    const res = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.features?.length > 0) {
-        const props = data.features[0].properties || {};
-        const road = props.street || props.name;
-        const city = props.city || props.town || props.village;
-        const parts = [road, city, props.state, props.country].filter(Boolean);
-        return {
-          formattedAddress: parts.join(', '),
-          road,
-          city,
-          state: props.state
-        };
-      }
-    }
-  } catch {}
-
-  // 6. Fallback to coordinate string
+  // Strictly NO external APIs (no OSM public Nominatim, BigDataCloud, or Photon).
+  // Return clean coordinate string as default fallback when not found in local index.
   return {
     formattedAddress: `${lat.toFixed(5)}, ${lng.toFixed(5)}`
   };

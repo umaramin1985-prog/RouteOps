@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import docker
 import os
+import json
+import yaml
 import csv
 import psutil
 import subprocess
@@ -349,6 +351,42 @@ def get_db_status(db: Session = Depends(get_db)):
     except Exception as e:
         return {'status': 'disconnected', 'error': str(e)}
 
+def get_data_dir():
+    import os
+    if os.path.exists('/.dockerenv'):
+        return '/data'
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+
+def get_saved_ports():
+    default_ports = {'car': 5001, 'foot': 5005, 'nominatim': 8080, 'pelias': 4000}
+    try:
+        ports_path = os.path.join(get_data_dir(), 'ports.json')
+        if os.path.exists(ports_path):
+            with open(ports_path, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if str(v).isdigit():
+                            default_ports[k] = int(v)
+    except Exception:
+        pass
+    return default_ports
+
+def save_ports(ports: dict):
+    try:
+        data_dir = get_data_dir()
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
+        ports_path = os.path.join(data_dir, 'ports.json')
+        current = get_saved_ports()
+        for k, v in ports.items():
+            if str(v).isdigit():
+                current[k] = int(v)
+        with open(ports_path, 'w') as f:
+            json.dump(current, f)
+    except Exception:
+        pass
+
 @app.get('/system/docker')
 def get_docker_status():
     try:
@@ -360,14 +398,13 @@ def get_docker_status():
         pelias_status = 'Not Found'
         car_started_at = None
         foot_started_at = None
-        car_port = 5001
-        foot_port = 5005
         nominatim_started_at = None
         pelias_started_at = None
-        car_port = 5001
-        foot_port = 5005
-        nominatim_port = 8080
-        pelias_port = 4000
+        saved_ports = get_saved_ports()
+        car_port = saved_ports.get('car', 5001)
+        foot_port = saved_ports.get('foot', 5005)
+        nominatim_port = saved_ports.get('nominatim', 8080)
+        pelias_port = saved_ports.get('pelias', 4000)
         for c in containers:
             if 'osrm-car' in c.name:
                 car_status = c.status
@@ -392,10 +429,15 @@ def get_docker_status():
                     pelias_port = int(pb['3100/tcp'][0]['HostPort'])
                 elif '4000/tcp' in pb and pb['4000/tcp']:
                     pelias_port = int(pb['4000/tcp'][0]['HostPort'])
+        
+        save_ports({'car': car_port, 'foot': foot_port, 'nominatim': nominatim_port, 'pelias': pelias_port})
+
         active_states = []
         try:
-            import json
-            with open('/data/active_states.json', 'r') as f:
+            states_file = os.path.join(get_data_dir(), 'active_states.json')
+            if not os.path.exists(states_file) and os.path.exists('/data/active_states.json'):
+                states_file = '/data/active_states.json'
+            with open(states_file, 'r') as f:
                 active_states = json.load(f)
         except:
             pass
@@ -486,13 +528,6 @@ def get_pelias_logs():
 
 
 import datetime
-
-
-def get_data_dir():
-    import os
-    if os.path.exists('/.dockerenv'):
-        return '/data'
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
 
 def get_docker_mounts():
     import os
@@ -586,21 +621,12 @@ def process_deploy(car_port: int, foot_port: int, engines: dict = None):
     log_msg(f'Starting deployment with car_port={car_port}, foot_port={foot_port}')
     
     # 1. Update compose file
-    compose_path = os.path.abspath('../docker-compose.yml')
-    try:
-        try:
-            with open(compose_path, 'r') as f:
-                compose_data = yaml.safe_load(f)
-            if engines.get("car", True):
-                compose_data['services']['osrm-car']['ports'] = [f'{car_port}:5000']
-            if engines.get("foot", True):
-                compose_data['services']['osrm-foot']['ports'] = [f'{foot_port}:5000']
-            with open(compose_path, 'w') as f:
-                yaml.dump(compose_data, f)
-            log_msg('Updated docker-compose.yml ports.')
-        except Exception as e:
-            log_msg(f'Notice: Skipping docker-compose.yml update: {e}')
+    update_compose_ports(
+        car_port=car_port if engines.get("car", True) else None,
+        foot_port=foot_port if engines.get("foot", True) else None
+    )
         
+    try:
         # 2. Stop and remove existing OSRM containers
         client = docker.from_env()
         for container in client.containers.list(all=True):
@@ -730,6 +756,29 @@ def log_msg(*args, **kwargs):
     except:
         pass
 
+def update_compose_ports(car_port: int = None, foot_port: int = None):
+    try:
+        candidates = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'docker-compose.yml')),
+            os.path.abspath('docker-compose.yml'),
+            os.path.abspath('../docker-compose.yml'),
+        ]
+        for compose_path in candidates:
+            if os.path.exists(compose_path):
+                with open(compose_path, 'r') as f:
+                    compose_data = yaml.safe_load(f) or {}
+                if 'services' in compose_data and isinstance(compose_data['services'], dict):
+                    if car_port and 'osrm-car' in compose_data['services']:
+                        compose_data['services']['osrm-car']['ports'] = [f'{car_port}:5000']
+                    if foot_port and 'osrm-foot' in compose_data['services']:
+                        compose_data['services']['osrm-foot']['ports'] = [f'{foot_port}:5000']
+                    with open(compose_path, 'w') as f:
+                        yaml.dump(compose_data, f)
+                    log_msg(f'Updated {compose_path} ports.')
+                    break
+    except Exception as e:
+        log_msg(f'Notice: Skipping docker-compose.yml update: {e}')
+
 @app.get('/system/logs')
 def get_system_logs():
     try:
@@ -759,12 +808,13 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
         pass
         
     try:
-        import json, os
         data_dir = get_data_dir()
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
         with open(os.path.join(data_dir, 'active_states.json'), 'w') as f:
             json.dump(req.states, f)
+        save_ports({'car': req.car_port, 'foot': req.foot_port, 'nominatim': req.nominatim_port, 'pelias': req.pelias_port})
+        update_compose_ports(car_port=req.car_port, foot_port=req.foot_port)
     except Exception as e:
         pass
 
@@ -961,12 +1011,13 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
         pass
         
     try:
-        import json, os
         data_dir = get_data_dir()
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
         with open(os.path.join(data_dir, 'active_states.json'), 'w') as f:
             json.dump(req.states, f)
+        save_ports({'car': req.car_port, 'foot': req.foot_port, 'nominatim': req.nominatim_port, 'pelias': req.pelias_port})
+        update_compose_ports(car_port=req.car_port, foot_port=req.foot_port)
     except Exception as e:
         pass
 
@@ -1075,19 +1126,67 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
             log_msg('Running OSRM Customize for FOOT...')
             stream_container_logs(client, 'osrm/osrm-backend', cust_cmd_foot, **get_docker_mounts())
             
-        if engines.get("car", True) and os.path.exists(os.path.join(data_dir, 'car.osm.pbf')):
-            log_msg('Hot-reloading CAR container with shared memory...')
+        if engines.get("car", True) and (os.path.exists(os.path.join(data_dir, 'car.osrm')) or os.path.exists(os.path.join(data_dir, 'car.osm.pbf'))):
+            car_container = None
+            car_running_port = None
             for container in client.containers.list(all=True):
                 if 'osrm-car' in container.name:
-                    container.exec_run('osrm-datastore /data/car.osrm')
-                    log_msg('Hot-reloaded CAR profile successfully.')
+                    car_container = container
+                    pb = container.attrs.get('HostConfig', {}).get('PortBindings', {}).get('5000/tcp')
+                    if pb and len(pb) > 0:
+                        try: car_running_port = int(pb[0]['HostPort'])
+                        except: pass
+                    break
+
+            need_port_change = (car_running_port != req.car_port)
+            need_container_create = (car_container is None or car_container.status != 'running')
+
+            if need_port_change or need_container_create:
+                log_msg(f'Recreating osrm-car container on port {req.car_port}...')
+                if car_container:
+                    try:
+                        car_container.stop()
+                        car_container.remove()
+                    except:
+                        pass
+                if os.path.exists(os.path.join(data_dir, 'car.osrm')):
+                    client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/car.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-car-1', ports={'5000/tcp': req.car_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+                    log_msg(f'Started CAR profile container on port {req.car_port}.')
+            elif car_container and car_container.status == 'running':
+                log_msg('Hot-reloading CAR container with shared memory...')
+                car_container.exec_run('osrm-datastore /data/car.osrm')
+                log_msg('Hot-reloaded CAR profile successfully.')
         
-        if engines.get("foot", True) and os.path.exists(os.path.join(data_dir, 'foot.osm.pbf')):
-            log_msg('Hot-reloading FOOT container with shared memory...')
+        if engines.get("foot", True) and (os.path.exists(os.path.join(data_dir, 'foot.osrm')) or os.path.exists(os.path.join(data_dir, 'foot.osm.pbf'))):
+            foot_container = None
+            foot_running_port = None
             for container in client.containers.list(all=True):
                 if 'osrm-foot' in container.name:
-                    container.exec_run('osrm-datastore /data/foot.osrm')
-                    log_msg('Hot-reloaded FOOT profile successfully.')
+                    foot_container = container
+                    pb = container.attrs.get('HostConfig', {}).get('PortBindings', {}).get('5000/tcp')
+                    if pb and len(pb) > 0:
+                        try: foot_running_port = int(pb[0]['HostPort'])
+                        except: pass
+                    break
+
+            need_foot_port_change = (foot_running_port != req.foot_port)
+            need_foot_container_create = (foot_container is None or foot_container.status != 'running')
+
+            if need_foot_port_change or need_foot_container_create:
+                log_msg(f'Recreating osrm-foot container on port {req.foot_port}...')
+                if foot_container:
+                    try:
+                        foot_container.stop()
+                        foot_container.remove()
+                    except:
+                        pass
+                if os.path.exists(os.path.join(data_dir, 'foot.osrm')):
+                    client.containers.run('osrm/osrm-backend', 'sh -c "osrm-datastore /data/foot.osrm && exec osrm-routed --shared-memory=yes --algorithm mld"', entrypoint="", name='routeops-osrm-foot-1', ports={'5000/tcp': req.foot_port}, **get_docker_mounts(), detach=True, restart_policy={'Name': 'always'}, ipc_mode="shareable")
+                    log_msg(f'Started FOOT profile container on port {req.foot_port}.')
+            elif foot_container and foot_container.status == 'running':
+                log_msg('Hot-reloading FOOT container with shared memory...')
+                foot_container.exec_run('osrm-datastore /data/foot.osrm')
+                log_msg('Hot-reloaded FOOT profile successfully.')
                         
         try:
             import docker
@@ -1097,16 +1196,68 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
         except: pass
         
         if engines.get("nominatim", True):
-            log_msg('Restarting Nominatim to pick up new PBF...')
-            try: 
-                try: docker.from_env().containers.get('routeops-nominatim-1').restart()
-                except: docker.from_env().containers.get('nominatim').restart()
-            except Exception as e: pass
+            nom_container = None
+            nom_running_port = None
+            for container in client.containers.list(all=True):
+                if container.name in ['nominatim', 'routeops-nominatim-1']:
+                    nom_container = container
+                    pb = container.attrs.get('HostConfig', {}).get('PortBindings', {}).get('8080/tcp')
+                    if pb and len(pb) > 0:
+                        try: nom_running_port = int(pb[0]['HostPort'])
+                        except: pass
+                    break
+
+            need_nom_port_change = (nom_running_port != req.nominatim_port)
+            need_nom_container_create = (nom_container is None or nom_container.status != 'running')
+
+            if need_nom_port_change or need_nom_container_create:
+                log_msg(f'Recreating Nominatim on port {req.nominatim_port}...')
+                if nom_container:
+                    try:
+                        nom_container.stop()
+                        nom_container.remove()
+                    except:
+                        pass
+                client.containers.run('mediagis/nominatim:5.3', name='routeops-nominatim-1', ports={'8080/tcp': req.nominatim_port}, environment={'PBF_PATH': '/data/nominatim.osm.pbf', 'NOMINATIM_PASSWORD': 'super_secure_password', 'REPLICATION_URL': 'https://planet.osm.org/replication/hour/'}, network='routeops-geocoding_default', shm_size='2g', restart_policy={'Name': 'always'}, detach=True, volumes={'nominatim-data': {'bind': '/var/lib/postgresql/14/main', 'mode': 'rw'}, **(get_docker_mounts().get('volumes', {}))}, volumes_from=get_docker_mounts().get('volumes_from', None))
+                log_msg('Nominatim Recreated on new port!')
+            else:
+                log_msg('Restarting Nominatim to pick up new PBF...')
+                try: 
+                    try: docker.from_env().containers.get('routeops-nominatim-1').restart()
+                    except: docker.from_env().containers.get('nominatim').restart()
+                except Exception as e: pass
+
         if engines.get("pelias", True):
-            log_msg('Rebuilding Pelias Index...')
-            try:
-                # Generate pelias.json
-                pelias_json_content = '''{
+            pel_container = None
+            pel_running_port = None
+            for container in client.containers.list(all=True):
+                if container.name in ['pelias_api', 'routeops-pelias-1']:
+                    pel_container = container
+                    pb = container.attrs.get('HostConfig', {}).get('PortBindings', {})
+                    p_bind = pb.get('3100/tcp') or pb.get('4000/tcp')
+                    if p_bind and len(p_bind) > 0:
+                        try: pel_running_port = int(p_bind[0]['HostPort'])
+                        except: pass
+                    break
+
+            need_pel_port_change = (pel_running_port != req.pelias_port)
+            need_pel_container_create = (pel_container is None or pel_container.status != 'running')
+
+            if need_pel_port_change or need_pel_container_create:
+                log_msg(f'Recreating Pelias API on port {req.pelias_port}...')
+                if pel_container:
+                    try:
+                        pel_container.stop()
+                        pel_container.remove()
+                    except:
+                        pass
+                client.containers.run('pelias/api:master', name='routeops-pelias-1', ports={'3100/tcp': req.pelias_port}, environment={'PELIAS_CONFIG': '/data/pelias.json'}, network='routeops-geocoding_default', restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
+                log_msg('Pelias API Recreated on new port!')
+            else:
+                log_msg('Rebuilding Pelias Index...')
+                try:
+                    # Generate pelias.json
+                    pelias_json_content = '''{
   "logger": { "level": "info", "timestamp": false },
   "esclient": { "hosts": [{"host": "routeops-pelias-elasticsearch-1", "port": 9200}] },
   "elasticsearch": {
@@ -1127,33 +1278,33 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
     }
   }
 }'''
-                with open(os.path.join(data_dir, 'pelias.json'), 'w') as f:
-                    f.write(pelias_json_content)
+                    with open(os.path.join(data_dir, 'pelias.json'), 'w') as f:
+                        f.write(pelias_json_content)
 
-                try:
-                    c = client.containers.get('routeops-pelias-elasticsearch-1')
-                    if c.status != 'running':
-                        c.start()
-                except:
-                    log_msg('Starting Pelias Elasticsearch...')
-                    client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
-
-                if not setup_pelias_schema(client, get_docker_mounts()):
-                    log_msg("Pelias schema setup failed. Skipping OSM import.")
-                else:
-                    log_msg("--- Starting Pelias OSM Import ---")
-                    stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
                     try:
-                        c = client.containers.get('routeops-pelias-1')
-                        c.restart()
+                        c = client.containers.get('routeops-pelias-elasticsearch-1')
+                        if c.status != 'running':
+                            c.start()
                     except:
+                        log_msg('Starting Pelias Elasticsearch...')
+                        client.containers.run('pelias/elasticsearch:7.5.1', name='routeops-pelias-elasticsearch-1', network='routeops-geocoding_default', environment={'discovery.type': 'single-node'}, restart_policy={'Name': 'always'}, detach=True, **get_docker_mounts())
+
+                    if not setup_pelias_schema(client, get_docker_mounts()):
+                        log_msg("Pelias schema setup failed. Skipping OSM import.")
+                    else:
+                        log_msg("--- Starting Pelias OSM Import ---")
+                        stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={"PELIAS_CONFIG": "/data/pelias.json"}, network='routeops-geocoding_default', **get_docker_mounts())
                         try:
-                            c = client.containers.get('pelias_api')
+                            c = client.containers.get('routeops-pelias-1')
                             c.restart()
                         except:
-                            pass
-            except Exception as e:
-                log_msg(f"Pelias update error: {e}")
+                            try:
+                                c = client.containers.get('pelias_api')
+                                c.restart()
+                            except:
+                                pass
+                except Exception as e:
+                    log_msg(f"Pelias update error: {e}")
 
         log_msg('Zero-Downtime Deployment complete!')
 

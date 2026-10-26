@@ -1,17 +1,20 @@
-# RouteOps v2.3.0 🚗 🗺️
+# RouteOps v2.4.0 🚗 🗺️
 
-RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)**. It provides a sleek, dark-mode web dashboard to deploy routing engines for specific US states on-the-fly, calculate routes (Car & Foot), and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
+RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)** and self-hosted **Pelias / Nominatim** geocoding engines. It provides a sleek, dark-mode web dashboard to deploy routing and geocoding engines for specific US states on-the-fly, calculate routes (Car & Foot), search addresses locally, and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
 
-## 🚀 What's New in v2.3.0
-*   **Deployment Safety & Stability:** Background deployment tasks now feature global error boundaries. If a download from Geofabrik fails or the server runs out of memory during an `osmium-tool` map merge, the deployment gracefully aborts, automatically cleans up corrupted internal states, and unlocks the UI without requiring a server restart.
-*   **Enhanced Setup Scripts:** The `Fresh Install` option across all OS setup scripts (`setup-windows.ps1`, `setup-ubuntu.sh`, `setup-centos.sh`) now aggressively prunes all orphaned containers, dangling images, and volumes, guaranteeing a pristine Docker environment.
-*   **UI & UX Polish:** Removed double-scrollbars inside the Engine Setup modals by adopting a dynamic Flexbox layout, fixed phantom map boundaries persisting after states are deleted, and resolved a bug where backend startup logs would prematurely disable deployment buttons.
+## 🚀 What's New in v2.4.0
+*   **Strictly Local Geocoding & Reverse Geocoding:** All place searches, autocomplete queries, map click lookups, waypoint dragging, and "What's here?" reverse geocoding on the Live Map are now served strictly and exclusively by installed local **Pelias** or **Nominatim** container instances. All external public third-party web APIs (Photon Komoot, OpenStreetMap public Nominatim, BigDataCloud) have been completely removed for 100% self-hosted privacy and air-gapped reliability.
+*   **Live Map Geocoder Indicator & Status Badge:** The Live Map search bar now features a real-time badge displaying the active local geocoding engine (`Pelias` or `Nominatim`) with live connectivity status (green online / red offline) and descriptive search placeholder hints.
+*   **Pelias Indexing & Console Log Parsing Fix:** Resolved false-positive error coloring in the Engine Setup deployment console where normal progress updates reporting `failed_records=0` during OpenStreetMap indexing turned log lines red. Enhanced console syntax highlighter with emerald success notifications and amber warnings.
+*   **Select / Deselect All States:** Added one-click "Select All" and "Deselect All" options across all Engine Setup modal tabs (Car, Foot, Nominatim, Pelias) for rapid multi-state batch provisioning.
+*   **Port Configuration Persistence:** Resolved an issue where customized port assignments for routing and geocoding containers reverted back to defaults upon reload.
 
 ## 🌟 Features
 
 *   **One-Click Deployment:** Automatically download map data (OSM `.pbf` from Geofabrik) for any US state and spin up dedicated Docker containers.
 *   **Zero-Downtime Map Updates:** Add or remove states on-the-fly using the "Update States (Zero Downtime)" feature. The backend intelligently compiles new maps and swaps them into shared memory without dropping active API requests. Includes an automatic RAM safeguard that falls back to standard deployment if memory is low.
 *   **Zero-Downtime Hot-Swapping:** Close roads directly from the map UI. The backend uses `osrm-customize` and `osrm-datastore` via Shared Memory to instantly patch the routing engine in real-time without taking the server offline.
+*   **Strictly Self-Hosted Geocoding:** Integrated address search and reverse geocoding powered strictly by local **Pelias** and **Nominatim** containers with zero remote web requests.
 *   **Active Route Edits Management:** Monitor and manage thousands of hot-swapped road closures and speed adjustments in a dedicated, paginated grid with real-time search filtering.
 *   **Multi-Profile Routing:** Seamlessly switch between Car (driving) and Foot (walking) routing profiles.
 *   **Advanced Navigation & Debugging:** Avoid tolls, calculate alternative routes, view detailed turn-by-turn navigation instructions, and inspect raw, unformatted JSON API responses directly from the OSRM backend.
@@ -22,6 +25,7 @@ RouteOps is a powerful, full-stack transportation management system built around
 
 *   **Frontend:** React (Vite), TypeScript, Leaflet (Map rendering)
 *   **Backend:** Python (FastAPI), SQLAlchemy (PostgreSQL / PostGIS), Docker SDK
+*   **Geocoding:** Pelias (Elasticsearch 7 + Node.js API) & Nominatim (mediagis)
 *   **Database:** Fully automated schema migrations via **Alembic**.
 *   **Engine:** OSRM (Open Source Routing Machine) running via Docker (Project `routeops`)
 

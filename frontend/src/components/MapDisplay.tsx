@@ -325,7 +325,7 @@ export default function MapDisplay({
     const defaultText = text || `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
     setStops((prev) => prev.map((s) => (s.id === id ? { ...s, point, text: defaultText } : s)));
     if (!text) {
-      const geo = await reverseGeocode(point.lat, point.lng, dockerStatus);
+      const geo = await reverseGeocode(point.lat, point.lng, dockerStatus, activeEngine);
       if (geo.formattedAddress) {
         setStops((prev) => prev.map((s) => (s.id === id ? { ...s, text: geo.formattedAddress } : s)));
       }
@@ -375,6 +375,18 @@ export default function MapDisplay({
   useEffect(() => {
     if (isActive) fetchOverrides();
   }, [isActive]);
+
+  // Active Geocoding Engine computation (strictly local Pelias or Nominatim)
+  const activeGeocoderName = (activeEngine === 'nominatim' || (activeEngine === 'osrm' && dockerStatus?.nominatim === 'running' && dockerStatus?.pelias !== 'running'))
+    ? 'Nominatim'
+    : (activeEngine === 'pelias' || dockerStatus?.pelias === 'running')
+    ? 'Pelias'
+    : (dockerStatus?.nominatim === 'running')
+    ? 'Nominatim'
+    : 'Local Geocoder';
+
+  const isGeocoderOnline = (activeGeocoderName === 'Pelias' && (dockerStatus?.pelias === 'running' || dockerStatus?.pelias_port)) ||
+    (activeGeocoderName === 'Nominatim' && (dockerStatus?.nominatim === 'running' || dockerStatus?.nominatim_port));
 
   // ==========================================================================
   // Autocomplete Searches with Debounce
@@ -617,7 +629,7 @@ export default function MapDisplay({
       if (!startPoint) {
         setStartPoint(latlng);
         setStartInputText(`${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`);
-        const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus);
+        const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus, activeEngine);
         if (geo.formattedAddress) setStartInputText(geo.formattedAddress);
         if (geo.city) setCityName(geo.city);
       } else {
@@ -628,7 +640,7 @@ export default function MapDisplay({
         } else if (!endPoint) {
           setEndPoint(latlng);
           setEndInputText(`${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`);
-          const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus);
+          const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus, activeEngine);
           if (geo.formattedAddress) setEndInputText(geo.formattedAddress);
         }
       }
@@ -641,7 +653,7 @@ export default function MapDisplay({
         lng: latlng.lng
       });
 
-      const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus);
+      const geo = await reverseGeocode(latlng.lat, latlng.lng, dockerStatus, activeEngine);
       if (geo.formattedAddress) {
         setActivePlace({
           title: geo.road || geo.city || 'Dropped Pin',
@@ -686,7 +698,7 @@ export default function MapDisplay({
   const handleDragStartMarker = async (newLatLng: L.LatLng) => {
     setStartPoint(newLatLng);
     setStartInputText(`${newLatLng.lat.toFixed(5)}, ${newLatLng.lng.toFixed(5)}`);
-    const geo = await reverseGeocode(newLatLng.lat, newLatLng.lng, dockerStatus);
+    const geo = await reverseGeocode(newLatLng.lat, newLatLng.lng, dockerStatus, activeEngine);
     if (geo.formattedAddress) setStartInputText(geo.formattedAddress);
     if (geo.city) setCityName(geo.city);
   };
@@ -694,7 +706,7 @@ export default function MapDisplay({
   const handleDragEndMarker = async (newLatLng: L.LatLng) => {
     setEndPoint(newLatLng);
     setEndInputText(`${newLatLng.lat.toFixed(5)}, ${newLatLng.lng.toFixed(5)}`);
-    const geo = await reverseGeocode(newLatLng.lat, newLatLng.lng, dockerStatus);
+    const geo = await reverseGeocode(newLatLng.lat, newLatLng.lng, dockerStatus, activeEngine);
     if (geo.formattedAddress) setEndInputText(geo.formattedAddress);
   };
 
@@ -1030,7 +1042,7 @@ export default function MapDisplay({
             <Search size={20} color="var(--gmaps-subtext)" style={{ flexShrink: 0, marginRight: '10px' }} />
             <input
               type="text"
-              placeholder="Search Google Maps or type address..."
+              placeholder={isSearching ? "Searching local database..." : `Search places with ${activeGeocoderName}...`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => setActiveInputFocus('search')}
@@ -1044,6 +1056,28 @@ export default function MapDisplay({
                 fontFamily: 'Inter, sans-serif'
               }}
             />
+
+            <span
+              title={`Geocoding exclusively served by installed ${activeGeocoderName} instance`}
+              style={{
+                fontSize: '10px',
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: isGeocoderOnline ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                color: isGeocoderOnline ? '#10b981' : '#ef4444',
+                fontWeight: 700,
+                letterSpacing: '0.3px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                marginRight: '6px',
+                whiteSpace: 'nowrap',
+                userSelect: 'none'
+              }}
+            >
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isGeocoderOnline ? '#10b981' : '#ef4444' }} />
+              {activeGeocoderName}
+            </span>
 
             {isSearching && (
               <div
@@ -1620,7 +1654,7 @@ export default function MapDisplay({
         )}
 
         {/* Autocomplete Dropdown List */}
-        {((panelMode === 'search' && searchResults.length > 0) ||
+        {((panelMode === 'search' && (searchResults.length > 0 || (searchQuery.trim().length > 1 && !isSearching && activeInputFocus === 'search'))) ||
           (activeInputFocus === 'start' && startSuggestions.length > 0) ||
           (activeInputFocus === 'end' && endSuggestions.length > 0) ||
           (activeInputFocus?.startsWith('stop-') && stopSuggestions.length > 0)) && (
@@ -1632,14 +1666,19 @@ export default function MapDisplay({
               overflowY: 'auto'
             }}
           >
-            {(activeInputFocus === 'start'
-              ? startSuggestions
-              : activeInputFocus === 'end'
-              ? endSuggestions
-              : activeInputFocus?.startsWith('stop-')
-              ? stopSuggestions
-              : searchResults
-            ).map((item) => (
+            {panelMode === 'search' && searchResults.length === 0 && !isSearching && searchQuery.trim().length > 1 && activeInputFocus === 'search' ? (
+              <div style={{ padding: '12px 16px', fontSize: '12px', color: 'var(--gmaps-subtext)', textAlign: 'center' }}>
+                No places found in installed <strong style={{ color: 'var(--gmaps-text)' }}>{activeGeocoderName}</strong> for &ldquo;{searchQuery}&rdquo;.
+              </div>
+            ) : (
+              (activeInputFocus === 'start'
+                ? startSuggestions
+                : activeInputFocus === 'end'
+                ? endSuggestions
+                : activeInputFocus?.startsWith('stop-')
+                ? stopSuggestions
+                : searchResults
+              ).map((item) => (
               <div
                 key={item.id}
                 className="gmaps-dropdown-item"
@@ -1677,7 +1716,7 @@ export default function MapDisplay({
                   </div>
                 </div>
               </div>
-            ))}
+            )))}
           </div>
         )}
       </div>
@@ -1913,7 +1952,7 @@ export default function MapDisplay({
               setStartPoint(contextMenu.latlng);
               setStartInputText(`${contextMenu.latlng.lat.toFixed(5)}, ${contextMenu.latlng.lng.toFixed(5)}`);
               setContextMenu(null);
-              reverseGeocode(contextMenu.latlng.lat, contextMenu.latlng.lng, dockerStatus).then((geo) => {
+              reverseGeocode(contextMenu.latlng.lat, contextMenu.latlng.lng, dockerStatus, activeEngine).then((geo) => {
                 if (geo.formattedAddress) setStartInputText(geo.formattedAddress);
                 if (geo.city) setCityName(geo.city);
               });
@@ -1930,7 +1969,7 @@ export default function MapDisplay({
               setEndPoint(contextMenu.latlng);
               setEndInputText(`${contextMenu.latlng.lat.toFixed(5)}, ${contextMenu.latlng.lng.toFixed(5)}`);
               setContextMenu(null);
-              reverseGeocode(contextMenu.latlng.lat, contextMenu.latlng.lng, dockerStatus).then((geo) => {
+              reverseGeocode(contextMenu.latlng.lat, contextMenu.latlng.lng, dockerStatus, activeEngine).then((geo) => {
                 if (geo.formattedAddress) setEndInputText(geo.formattedAddress);
               });
             }}
@@ -1949,19 +1988,19 @@ export default function MapDisplay({
               if (!startPoint) {
                 setStartPoint(pt);
                 setStartInputText(`${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}`);
-                reverseGeocode(pt.lat, pt.lng, dockerStatus).then((g) => {
+                reverseGeocode(pt.lat, pt.lng, dockerStatus, activeEngine).then((g) => {
                   if (g.formattedAddress) setStartInputText(g.formattedAddress);
                 });
               } else if (!endPoint) {
                 setEndPoint(pt);
                 setEndInputText(`${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}`);
-                reverseGeocode(pt.lat, pt.lng, dockerStatus).then((g) => {
+                reverseGeocode(pt.lat, pt.lng, dockerStatus, activeEngine).then((g) => {
                   if (g.formattedAddress) setEndInputText(g.formattedAddress);
                 });
               } else {
                 const newId = `stop-${Date.now()}`;
                 setStops((prev) => [...prev, { id: newId, point: pt, text: `${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}` }]);
-                reverseGeocode(pt.lat, pt.lng, dockerStatus).then((g) => {
+                reverseGeocode(pt.lat, pt.lng, dockerStatus, activeEngine).then((g) => {
                   if (g.formattedAddress) {
                     setStops((prev) => prev.map((s) => (s.id === newId ? { ...s, text: g.formattedAddress } : s)));
                   }
@@ -1987,7 +2026,7 @@ export default function MapDisplay({
                 lat: latlng.lat,
                 lng: latlng.lng
               });
-              reverseGeocode(latlng.lat, latlng.lng, dockerStatus).then((geo) => {
+              reverseGeocode(latlng.lat, latlng.lng, dockerStatus, activeEngine).then((geo) => {
                 setActivePlace({
                   title: geo.road || geo.city || 'Dropped Pin',
                   subtitle: geo.formattedAddress,
