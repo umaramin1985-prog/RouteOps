@@ -110,8 +110,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const [apiCalls, setApiCalls] = useState<any[]>([]);
     const [carPort, setCarPort] = useState<number>(5001);
     const [footPort, setFootPort] = useState<number>(5005);
-    const [nominatimPort, setNominatimPort] = useState<number>(8080);
-    const [peliasPort, setPeliasPort] = useState<number>(4000);
+    const [nominatimPort, setNominatimPort] = useState<number>(5003);
+    const [peliasPort, setPeliasPort] = useState<number>(5002);
 
     const [searchQuery, setSearchQuery] = useState('');
     const [showModal, setShowModal] = useState(false);
@@ -279,8 +279,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
 
         const pingGeocoders = async () => {
             const hostname = window.location.hostname || 'localhost';
-            const nomPort = nominatimPort || 8080;
-            const pelPort = peliasPort || 4000;
+            const nomPort = nominatimPort || 5003;
+            const pelPort = peliasPort || 5002;
 
             if (dockerStatus?.nominatim === 'running') {
                 const t0 = performance.now();
@@ -548,8 +548,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         const enteredPort = parseInt(modalPort, 10);
         const effectiveCarPort = modalTab === 'car' ? (enteredPort || carPort || 5001) : (carPort || 5001);
         const effectiveFootPort = modalTab === 'foot' ? (enteredPort || footPort || 5005) : (footPort || 5005);
-        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 8080) : (nominatimPort || 8080);
-        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 4000) : (peliasPort || 4000);
+        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 5003) : (nominatimPort || 5003);
+        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 5002) : (peliasPort || 5002);
 
         setCarPort(effectiveCarPort);
         setFootPort(effectiveFootPort);
@@ -590,8 +590,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         const enteredPort = parseInt(modalPort, 10);
         const effectiveCarPort = modalTab === 'car' ? (enteredPort || carPort || 5001) : (carPort || 5001);
         const effectiveFootPort = modalTab === 'foot' ? (enteredPort || footPort || 5005) : (footPort || 5005);
-        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 8080) : (nominatimPort || 8080);
-        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 4000) : (peliasPort || 4000);
+        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 5003) : (nominatimPort || 5003);
+        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 5002) : (peliasPort || 5002);
 
         setCarPort(effectiveCarPort);
         setFootPort(effectiveFootPort);
@@ -1169,7 +1169,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                                 pattern="[0-9]*"
                                                 value={modalPort}
                                                 onChange={e => setModalPort(e.target.value.replace(/\D/g, ''))}
-                                                placeholder={modalTab === 'car' ? '5001' : modalTab === 'foot' ? '5005' : modalTab === 'nominatim' ? '8080' : '4000'}
+                                                placeholder={modalTab === 'car' ? '5001' : modalTab === 'foot' ? '5005' : modalTab === 'nominatim' ? '5003' : '5002'}
                                                 style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }}
                                             />
                                         </div>

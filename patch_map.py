@@ -22,7 +22,7 @@ search_logic = """  const handleSearch = async () => {
     
     try {
         if (activeEngine === 'nominatim') {
-            const port = dockerStatus?.nominatim_port || 8080;
+            const port = dockerStatus?.nominatim_port || 5003;
             const res = await fetch(`http://${window.location.hostname}:${port}/search?q=${encodeURIComponent(searchQuery)}&format=json`);
             const data = await res.json();
             if (data && data.length > 0) {
@@ -34,7 +34,7 @@ search_logic = """  const handleSearch = async () => {
                 setRouteError('No results found from Nominatim.');
             }
         } else if (activeEngine === 'pelias') {
-            const port = dockerStatus?.pelias_port || 4000;
+            const port = dockerStatus?.pelias_port || 5002;
             const res = await fetch(`http://${window.location.hostname}:${port}/v1/autocomplete?text=${encodeURIComponent(searchQuery)}`);
             const data = await res.json();
             if (data && data.features && data.features.length > 0) {

@@ -7,7 +7,7 @@ RouteOps is a powerful, full-stack transportation management system built around
 *   **Live Map Geocoder Indicator & Status Badge:** The Live Map search bar now features a real-time badge displaying the active local geocoding engine (`Pelias` or `Nominatim`) with live connectivity status (green online / red offline) and descriptive search placeholder hints.
 *   **Pelias Indexing & Console Log Parsing Fix:** Resolved false-positive error coloring in the Engine Setup deployment console where normal progress updates reporting `failed_records=0` during OpenStreetMap indexing turned log lines red. Enhanced console syntax highlighter with emerald success notifications and amber warnings.
 *   **Select / Deselect All States:** Added one-click "Select All" and "Deselect All" options across all Engine Setup modal tabs (Car, Foot, Nominatim, Pelias) for rapid multi-state batch provisioning.
-*   **Port Configuration Persistence:** Resolved an issue where customized port assignments for routing and geocoding containers reverted back to defaults upon reload.
+*   **Port Configuration Persistence & Port Standardization:** Resolved an issue where customized port assignments for routing and geocoding containers reverted back to defaults upon reload. Standardized default host ports for local geocoders to avoid system collisions: **Pelias** is now mapped to default port `5002` (was `4000`), and **Nominatim** is now mapped to default port `5003` (was `8080`).
 
 ## 🌟 Features
 
@@ -28,6 +28,21 @@ RouteOps is a powerful, full-stack transportation management system built around
 *   **Geocoding:** Pelias (Elasticsearch 7 + Node.js API) & Nominatim (mediagis)
 *   **Database:** Fully automated schema migrations via **Alembic**.
 *   **Engine:** OSRM (Open Source Routing Machine) running via Docker (Project `routeops`)
+
+### 🔌 Default Ports Matrix
+
+| Service | Default Port | Configurable? | Description |
+|---|---|---|---|
+| Frontend UI (Production) | `80` | Yes (in `docker-compose.prod.yml`) | Web portal served by Nginx |
+| Frontend UI (Dev) | `5173` | Yes (in `docker-compose.yml`) | Vite Dev Server |
+| Backend API (Production) | `5172` (Host) -> `8000` (Container) | Yes | FastAPI REST API & Docker SDK controller |
+| Backend API (Dev) | `8000` | Yes | Local FastAPI server |
+| PostgreSQL / PostGIS | `5433` (Host) -> `5432` (Container) | Yes | Spatial database with persistent volume |
+| OSRM Car Engine | `5001` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) | Car driving routing profile |
+| OSRM Foot Engine | `5005` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) | Foot walking routing profile |
+| Nominatim Geocoding | `5003` (Host) -> `8080` (Container) | Yes (via UI & compose) | Self-hosted address search & reverse geocoding |
+| Pelias API | `5002` (Host) -> `4000` (Container) | Yes (via UI & compose) | Self-hosted autocomplete & reverse geocoding |
+| Pelias Elasticsearch | `9200` | Fixed internal | Elasticsearch 7 backend for Pelias |
 
 ## 🚀 Prerequisites
 

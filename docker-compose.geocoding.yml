@@ -11,7 +11,7 @@ services:
     container_name: nominatim
     restart: always
     ports:
-      - "8080:8080"
+      - "5003:8080"
     environment:
       # This tells Nominatim to automatically import this PBF on first run
       - PBF_PATH=/data/nominatim.osm.pbf
@@ -54,7 +54,7 @@ services:
     container_name: pelias_api
     restart: always
     ports:
-      - "4000:4000"
+      - "5002:4000"
     environment:
       - PELIAS_CONFIG=/data/pelias.json
     volumes:

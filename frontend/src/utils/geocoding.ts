@@ -92,7 +92,7 @@ export async function searchPlaces(
   // Helper to query local Nominatim
   const tryLocalNominatim = async (): Promise<PlaceResult[] | null> => {
     if (!isNominatimAvailable) return null;
-    const port = docker?.nominatim_port || 8080;
+    const port = docker?.nominatim_port || 5003;
     const t0 = performance.now();
     try {
       const res = await fetch(`http://${hostname}:${port}/search?q=${encodeURIComponent(clean)}&format=json&addressdetails=1&limit=8`, { signal: AbortSignal.timeout(2500) });
@@ -127,7 +127,7 @@ export async function searchPlaces(
   // Helper to query local Pelias
   const tryLocalPelias = async (): Promise<PlaceResult[] | null> => {
     if (!isPeliasAvailable) return null;
-    const port = docker?.pelias_port || 4000;
+    const port = docker?.pelias_port || 5002;
     const t0 = performance.now();
     try {
       // 1. Try autocomplete first (ideal for prefix/typeahead search)
@@ -212,7 +212,7 @@ export async function reverseGeocode(
   // 1. Helper to reverse-geocode via local Pelias
   const tryPeliasReverse = async (): Promise<ReverseGeocodeResult | null> => {
     if (!isPeliasAvailable) return null;
-    const pelPort = dockerStatus?.pelias_port || 4000;
+    const pelPort = dockerStatus?.pelias_port || 5002;
     const t0 = performance.now();
     try {
       const res = await fetch(`http://${hostname}:${pelPort}/v1/reverse?point.lat=${lat}&point.lon=${lng}&size=1`, { signal: AbortSignal.timeout(2000) });
@@ -243,7 +243,7 @@ export async function reverseGeocode(
   // 2. Helper to reverse-geocode via local Nominatim
   const tryNominatimReverse = async (): Promise<ReverseGeocodeResult | null> => {
     if (!isNominatimAvailable) return null;
-    const nomPort = dockerStatus?.nominatim_port || 8080;
+    const nomPort = dockerStatus?.nominatim_port || 5003;
     const t0 = performance.now();
     try {
       const res = await fetch(`http://${hostname}:${nomPort}/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`, { signal: AbortSignal.timeout(2000) });

@@ -32,8 +32,8 @@ The platform provides a modern command-center interface to:
                                                           |
                                     HTTP :80 (Prod) /     |     HTTP :5001 (Car)
                                     HTTP :5173 (Dev)      |     HTTP :5005 (Foot)
-                                                          |     HTTP :8080 (Nominatim)
-                                                          v     HTTP :4000 (Pelias)
+                                                          |     HTTP :5003 (Nominatim)
+                                                          v     HTTP :5002 (Pelias)
                           +-------------------------------+--------------------------------+
                           |                   Nginx (Prod) / Vite (Dev)                    |
                           |  Proxies /api/* -> Backend:8000 | Serves SPA bundle on /       |
@@ -64,12 +64,12 @@ The platform provides a modern command-center interface to:
                                                                       |     - osrm-routed --shared-memory
                                                                       |     - osrm-datastore hot-swap
                                                                       |
-                                                                      +---> routeops-nominatim-1 (:8080)
+                                                                      +---> routeops-nominatim-1 (:5003)
                                                                       |     - mediagis/nominatim:5.3
                                                                       |
                                                                       +---> Pelias Geocoding Stack:
                                                                       |     - routeops-pelias-elasticsearch-1 (:9200)
-                                                                      |     - routeops-pelias-1 (:4000 -> :3100)
+                                                                      |     - routeops-pelias-1 (:5002 -> :4000)
                                                                       |     - pelias/schema (on build)
                                                                       |     - pelias/openstreetmap (on build)
                                                                       |
@@ -92,7 +92,7 @@ c:\Code\OSRM 2\
 ├── README.md                       # High-level project documentation, v2.4.0 release notes
 ├── docker-compose.yml              # Dev compose: backend (:8000), frontend (:5173), postgis db (:5433)
 ├── docker-compose.prod.yml         # Production compose: backend (:5172), frontend (:80), postgis db (:5433)
-├── docker-compose.geocoding.yml    # Geocoding compose: Nominatim (:8080) + Pelias (ES:9200, API:4000)
+├── docker-compose.geocoding.yml    # Geocoding compose: Nominatim (:5003) + Pelias (ES:9200, API:5002)
 ├── install.py                      # Interactive fresh install Python runner (port collision resolution)
 ├── setup-windows.ps1               # Automated installer/updater for Windows (PowerShell)
 ├── setup-ubuntu.sh                 # Automated installer/updater for Ubuntu / Debian (Bash)
@@ -316,8 +316,8 @@ On startup (`@app.on_event("startup")`):
 - **4 Engine Cards:**
   - Car Routing Engine (`osrm-car`, default port 5001)
   - Foot Routing Engine (`osrm-foot`, default port 5005)
-  - Nominatim Geocoder (`nominatim`, default port 8080)
-  - Pelias Search/Autocomplete (`pelias_api`, default port 4000)
+  - Nominatim Geocoder (`nominatim`, default port 5003)
+  - Pelias Search/Autocomplete (`pelias_api`, default port 5002)
 - Each card shows: Online/Offline status badge, uptime duration, installed states count (clickable popup to view list), log file size, 24-hour total API hits, service breakdown badges, average/min/max response times, failed request count, peak requests/minute, and last request timestamp.
 - **Live System Telemetry Charts:** Real-time graphs for CPU %, RAM %, Disk Read/Write rates, and Network In/Out rates.
 - **Console / Terminal Panel:**
@@ -407,10 +407,10 @@ The `./data` directory is mounted into Docker containers as `/data`. It contains
 - PostgreSQL/PostGIS on port `5433:5432` with persistent `db_data` volume.
 
 ### 7.3 Geocoding Stack (`docker-compose.geocoding.yml`)
-- **`nominatim`** (`mediagis/nominatim:5.3`): Port `8080:8080`, 2GB shared memory, auto-imports `/data/nominatim.osm.pbf`.
+- **`nominatim`** (`mediagis/nominatim:5.3`): Port `5003:8080`, 2GB shared memory, auto-imports `/data/nominatim.osm.pbf`.
 - **`pelias_elasticsearch`** (`pelias/elasticsearch:7.17.15`): Port `9200:9200`, single-node cluster.
 - **`pelias_schema`** (`pelias/schema:master`): Ephemeral container to create Elasticsearch index.
-- **`pelias_api`** (`pelias/api:master`): Node.js API server on port `4000:4000`.
+- **`pelias_api`** (`pelias/api:master`): Node.js API server on port `5002:4000`.
 - **`pelias_osm_importer`** (`pelias/openstreetmap:master`): Imports OSM data into Elasticsearch (`profiles: [tools]`).
 
 ---
@@ -444,8 +444,8 @@ When run, the scripts prompt:
 | PostgreSQL / PostGIS | `5433` (Host) -> `5432` (Container) | Yes |
 | OSRM Car Engine | `5001` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) |
 | OSRM Foot Engine | `5005` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) |
-| Nominatim Geocoding | `8080` | Yes (via UI & compose) |
-| Pelias API | `4000` | Yes (via UI & compose) |
+| Nominatim Geocoding | `5003` (Host) -> `8080` (Container) | Yes (via UI & compose) |
+| Pelias API | `5002` (Host) -> `4000` (Container) | Yes (via UI & compose) |
 | Pelias Elasticsearch | `9200` | Fixed internal |
 
 ### 8.3 Default Credentials
@@ -496,7 +496,7 @@ When run, the scripts prompt:
 
 ### v2.4.0 (Current)
 - **Strictly Local Geocoding & Reverse Geocoding:**
-  - Forward search (`searchPlaces`) and reverse geocoding (`reverseGeocode`) on the Live Map now strictly query installed local **Pelias** (`routeops-pelias-1` / port 4000) or **Nominatim** (`routeops-nominatim-1` / port 8080).
+  - Forward search (`searchPlaces`) and reverse geocoding (`reverseGeocode`) on the Live Map now strictly query installed local **Pelias** (`routeops-pelias-1` / port 5002) or **Nominatim** (`routeops-nominatim-1` / port 5003).
   - Completely purged all third-party external public web fallbacks (Photon Komoot, OpenStreetMap public Nominatim, BigDataCloud) for full air-gapped compliance, self-hosted privacy, and offline stability.
   - Replaced fallback mechanisms with raw coordinates (`lat, lng`) for points outside indexed boundaries.
 - **Live Map Geocoder Status & Indicators:**
@@ -507,8 +507,9 @@ When run, the scripts prompt:
   - Added granular console highlighting with emerald green (`#10b981`) for completions and amber (`#f59e0b`) for warnings.
 - **Select / Deselect All States:**
   - Added batch "Select All" and "Deselect All" options in the Engine Setup modal for rapid multi-state provisioning.
-- **Port Configuration Persistence:**
+- **Port Configuration Persistence & Port Standardization:**
   - Fixed an issue where custom-configured ports for routing and geocoding engines were reverting to default values upon saving or container reload.
+  - Standardized default geocoder host ports to avoid system collisions: **Pelias** is now mapped to default port `5002` (was `4000`), and **Nominatim** is now mapped to default port `5003` (was `8080`). Updated all compose files, status reporters, and client query routines.
 
 ### v2.3.0
 - **Deployment Safety & Stability:** Global error boundaries in background deployment tasks to gracefully abort, clean up partial states, and unlock the UI on download/merge failures.

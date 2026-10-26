@@ -358,7 +358,7 @@ def get_data_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
 
 def get_saved_ports():
-    default_ports = {'car': 5001, 'foot': 5005, 'nominatim': 8080, 'pelias': 4000}
+    default_ports = {'car': 5001, 'foot': 5005, 'nominatim': 5003, 'pelias': 5002}
     try:
         ports_path = os.path.join(get_data_dir(), 'ports.json')
         if os.path.exists(ports_path):
@@ -403,8 +403,8 @@ def get_docker_status():
         saved_ports = get_saved_ports()
         car_port = saved_ports.get('car', 5001)
         foot_port = saved_ports.get('foot', 5005)
-        nominatim_port = saved_ports.get('nominatim', 8080)
-        pelias_port = saved_ports.get('pelias', 4000)
+        nominatim_port = saved_ports.get('nominatim', 5003)
+        pelias_port = saved_ports.get('pelias', 5002)
         for c in containers:
             if 'osrm-car' in c.name:
                 car_status = c.status
@@ -794,8 +794,8 @@ class MergeRequest(BaseModel):
     states: Dict[str, list[str]]
     car_port: int
     foot_port: int
-    nominatim_port: int = 8080
-    pelias_port: int = 4000
+    nominatim_port: int = 5003
+    pelias_port: int = 5002
     force_download: bool = False
     engines: Dict[str, bool] = {"osrm": True, "nominatim": True, "pelias": True}
 
