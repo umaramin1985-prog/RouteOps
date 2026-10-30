@@ -131,6 +131,13 @@ def main():
     
     print_success('Docker containers started successfully.')
 
+    # 5. Clean up unnecessary build artifacts and dangling Docker resources
+    print_step('Cleaning up unnecessary Docker build artifacts and temporary files...')
+    run_cmd('docker container prune -f', ignore_error=True)
+    run_cmd('docker image prune -f', ignore_error=True)
+    run_cmd('docker builder prune -f', ignore_error=True)
+    print_success('Post-installation cleanup complete.')
+
     print('\n\033[1;36m===================================================')
     print('  INSTALLATION COMPLETE!  ')
     print('  Frontend UI: http://localhost/dashboard')

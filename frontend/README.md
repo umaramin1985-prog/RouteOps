@@ -1,32 +1,30 @@
-# React + TypeScript + Vite
+# GeoOps Frontend (RouteOps v2.4.0)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + TypeScript + Vite 8 + Leaflet web dashboard for **RouteOps / GeoOps**, providing real-time routing engine orchestration, zero-downtime map updates, dynamic road closures, telemetry monitoring, and strictly self-hosted local geocoding.
 
-Currently, two official plugins are available:
+## Key Components
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **[`src/components/Dashboard.tsx`](src/components/Dashboard.tsx):** Main shell with top navigation bar (`#setup`, `#map`, `#edits`), database connectivity status, light/dark theme toggle, and fullscreen mode.
+- **[`src/components/EngineSetup.tsx`](src/components/EngineSetup.tsx):** Manages the 4 Docker engines (`OSRM Car`, `OSRM Foot`, `Nominatim`, `Pelias`), per-engine state provisioning (with Select/Deselect All), custom port bindings, live system telemetry (`recharts`), container logs, and post-installation `[CLEANUP]` tracking.
+- **[`src/components/MapDisplay.tsx`](src/components/MapDisplay.tsx):** Interactive Leaflet map with multi-stop routing, turn-by-turn navigation, active local geocoder status indicator (`Pelias` / `Nominatim`), right-click road speed/closure overrides, and raw OSRM JSON inspection.
+- **[`src/components/ActiveEdits.tsx`](src/components/ActiveEdits.tsx):** Paginated, searchable grid of active road closures and speed overrides with state bounding-box filtering and one-click map zoom/revert.
+- **[`src/utils/geocoding.ts`](src/utils/geocoding.ts):** Strictly local forward (`searchPlaces`) and reverse (`reverseGeocode`) geocoding client querying self-hosted Pelias (`:5002`) and Nominatim (`:5003`) instances with zero external third-party web requests.
 
-## React Compiler
+## Development & Build
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+# Install dependencies
+npm install
 
-## Expanding the Oxlint configuration
+# Start Vite development server (http://localhost:5173)
+npm run dev
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+# Build production bundle to dist/
+npm run build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Docker Build
+
+- **Development ([`Dockerfile`](Dockerfile)):** Node 22 Alpine container running Vite dev server with npm cache and temp file cleanup.
+- **Production ([`Dockerfile.prod`](Dockerfile.prod)):** Multi-stage build compiling the static SPA in Node 22 Alpine (cleaning `node_modules` and caches post-build) and serving via `nginx:alpine` on port `80`.
+- **Build Context ([`.dockerignore`](.dockerignore)):** Excludes `node_modules/`, `dist/`, `.env`, `*.log`, and helper `.py` scripts.

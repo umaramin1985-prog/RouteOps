@@ -39,8 +39,10 @@ if command_exists docker; then
         git pull origin main || echo "[-] git pull failed! (If you downloaded a ZIP, this is normal. Ensure you manually copy the latest files here.)"
         docker compose -f docker-compose.prod.yml up -d --build || { echo "[-] docker compose failed!"; exit 1; }
 
+        docker container prune -f
         docker image prune -f
-        echo "[+] Deployment updated successfully."
+        docker builder prune -f
+        echo "[+] Deployment updated and cleaned up successfully."
         exit 0
     elif [ "$choice" = "1" ]; then
         echo "[*] Tearing down existing deployment to start fresh..."

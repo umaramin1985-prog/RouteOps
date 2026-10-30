@@ -41,8 +41,10 @@ if (Check-Command "docker") {
         docker compose -f docker-compose.prod.yml up -d --build
         if ($LASTEXITCODE -ne 0) { Write-Host "[-] docker compose failed!" -ForegroundColor Red; Read-Host "Press Enter to exit"; exit 1 }
         
+        docker container prune -f
         docker image prune -f
-        Write-Host "[+] Deployment updated successfully." -ForegroundColor Green
+        docker builder prune -f
+        Write-Host "[+] Deployment updated and cleaned up successfully." -ForegroundColor Green
         Read-Host "Press Enter to exit"
         exit 0
     } elseif ($choice -eq '1') {

@@ -76,9 +76,10 @@ The platform provides a modern command-center interface to:
                                                                       +---> stefda/osmium-tool (ephemeral merge)
                                                                       |
                                                                       +---> Persistent Volume: /data
-                                                                            - speeds.csv, active_states.json
-                                                                            - deploy.log, api_calls.json
-                                                                            - *.osm.pbf, *.osrm*, backup_*
+                                                                            - speeds.csv, active_states.json, ports.json
+                                                                            - deploy.log, api_calls.json, pelias.json
+                                                                            - *.osrm*, backup_*
+                                                                            - (*.osm.pbf purged post-install)
 ```
 
 ---
@@ -105,7 +106,8 @@ c:\Code\OSRM 2\
 ├── test_osm.py                     # Standalone test script for Pelias OSM import execution
 │
 ├── backend/                        # FastAPI Backend Application
-│   ├── Dockerfile                  # Python 3.10-slim + docker.io CLI + requirements
+│   ├── .dockerignore               # Excludes __pycache__, *.db, test_*.py from Docker build context
+│   ├── Dockerfile                  # Python 3.10-slim + docker.io CLI + requirements + layer cleanup
 │   ├── requirements.txt            # Python dependencies (fastapi, uvicorn, docker, psutil, alembic...)
 │   ├── database.py                 # SQLAlchemy database setup, RoadOverride & User models
 │   ├── main.py                     # Main application entry point, REST endpoints, Docker orchestrator
@@ -121,6 +123,7 @@ c:\Code\OSRM 2\
 │           └── 4ee414d6b05f_initial_schema.py # Initial migration baseline
 │
 ├── frontend/                       # React / Vite Frontend Application
+│   ├── .dockerignore               # Excludes node_modules, dist, *.py from Docker build context
 │   ├── package.json                # React 19, Vite 8, react-leaflet 5, recharts 3, lucide-react
 │   ├── tsconfig.json               # Root TypeScript configuration
 │   ├── tsconfig.app.json           # Application TypeScript configuration
@@ -157,11 +160,12 @@ c:\Code\OSRM 2\
 │
 └── data/                           # Runtime storage mounted into containers (git-ignored)
     ├── active_states.json          # Currently deployed states per engine profile
+    ├── ports.json                  # Persisted custom host port bindings per engine profile
     ├── speeds.csv                  # Road speed penalties generated from database for osrm-customize
     ├── deploy.log                  # Live log file streamed to the UI during build/merge/deploy
     ├── api_calls.json              # Buffer of recent API hits for analytics
     ├── pelias.json                 # Pelias configuration generated on deployment
-    ├── *.osm.pbf                   # Cached raw state PBF files downloaded from Geofabrik
+    ├── *.osm.pbf                   # Ephemeral state & merged PBF files (auto-deleted post-install)
     ├── car.osrm* / foot.osrm*      # Compiled OSRM routing graphs
     └── backup_car/ / backup_foot/  # Clean, unpatched OSRM graph backups
 ```
@@ -275,9 +279,20 @@ On startup (`@app.on_event("startup")`):
    - Spawns `osrm-routed --shared-memory=yes --algorithm mld`
 4. **Instant Road Override (No Downtime):**
    - When an edit is added or removed, `rebuild_osrm_data()` rewrites `speeds.csv`.
-   - Copies pristine graph from `/data/backup_{profile}/` back to `/data/`.
+   - Copies pristine graph from `/data/backup_{profile}/` back to `/data/` (does not require `.osm.pbf` files on disk).
    - Runs `osrm-customize /data/{profile}.osrm --segment-speed-file /data/speeds.csv` inside running container via `container.exec_run()`.
    - Runs `osrm-datastore /data/{profile}.osrm` inside running container to hot-swap shared memory blocks instantly.
+
+### 4.6 Automated Post-Installation Cleanup Lifecycle
+1. **Raw State PBF Cleanup (`cleanup_raw_state_pbfs`):**
+   - Only downloads state `.osm.pbf` files for the specific engine profiles enabled in the current deployment job.
+   - Immediately removes raw `{state}.osm.pbf` files once `osmium-tool` merge or single-state copy into `{profile}.osm.pbf` completes, reclaiming disk space before graph/index compilation begins.
+   - Also sweeps `/data` on backend startup (`on_startup()`) and after deployment completion/failure.
+2. **Per-Engine Artifact & Container Cleanup (`cleanup_engine_files` & `wait_for_nominatim_and_cleanup`):**
+   - **OSRM (`car`, `foot`):** Once the compiled graph is loaded into shared memory (`osrm-datastore`), deletes `/data/car.osm.pbf` and `/data/foot.osm.pbf`, cleans `/tmp/*` and `/var/tmp/*` inside `routeops-osrm-car-1` / `routeops-osrm-foot-1`, and prunes exited build containers.
+   - **Nominatim (`nominatim`):** Monitors the PostgreSQL import inside `routeops-nominatim-1` until `/var/lib/postgresql/*/main/initialized` is created, then removes `/data/nominatim.osm.pbf` on the host and `/nominatim/data.osm.pbf`, `/nominatim/*.pbf`, `/tmp/*`, `/var/tmp/*`, and `/var/lib/apt/lists/*` inside the container.
+   - **Pelias (`pelias`):** Once `pelias/schema` and `pelias/openstreetmap` complete indexing into Elasticsearch, removes `/data/pelias.osm.pbf` and cleans `/tmp/*`, `/var/tmp/*`, `/root/.npm`, and `/root/.cache` inside `routeops-pelias-1` and `routeops-pelias-elasticsearch-1`.
+   - **Docker Daemon Pruning:** Executes `client.containers.prune()` and `client.images.prune(filters={'dangling': True})` after each engine installation.
 
 ---
 
@@ -380,14 +395,15 @@ The `./data` directory is mounted into Docker containers as `/data`. It contains
 | File / Folder | Description |
 |---|---|
 | `active_states.json` | JSON dictionary mapping engine profile (`car`, `foot`, `nominatim`, `pelias`) to list of installed state slugs. |
+| `ports.json` | Persisted custom host port assignments (`car`, `foot`, `nominatim`, `pelias`). |
 | `speeds.csv` | Comma-delimited file containing `<from_node>,<to_node>,<speed>` used by `osrm-customize`. |
-| `deploy.log` | Text log tracking current and past deployments, downloads, and merge steps. |
+| `deploy.log` | Text log tracking current and past deployments, downloads, merge steps, and `[CLEANUP]` events. |
 | `api_calls.json` | Rolling buffer of up to 1,000 logged API calls with latencies and timestamps. |
 | `pelias.json` | Generated Pelias configuration specifying Elasticsearch host, indices, and OSM import path. |
-| `{state}.osm.pbf` | Downloaded OpenStreetMap protocol buffer files from Geofabrik. |
-| `car.osm.pbf`, `foot.osm.pbf` | Merged PBF files used as input for graph compilation. |
+| `{state}.osm.pbf` | Ephemeral raw state OpenStreetMap PBF files downloaded from Geofabrik (automatically removed after merge). |
+| `{profile}.osm.pbf` | Ephemeral merged PBF files (`car.osm.pbf`, `foot.osm.pbf`, `nominatim.osm.pbf`, `pelias.osm.pbf`) used during graph/index build and automatically deleted after installation. |
 | `car.osrm*`, `foot.osrm*` | Compiled OSRM MLD graph data files (`.cells`, `.ebg`, `.enw`, `.fileIndex`, `.hs`, `.mldgr`, `.nodes`, `.properties`, `.ramIndex`, `.timestamp`). |
-| `backup_car/`, `backup_foot/` | Pristine copies of graph files kept to allow re-applying `speeds.csv` cleanly. |
+| `backup_car/`, `backup_foot/` | Pristine copies of graph files kept to allow re-applying `speeds.csv` cleanly without `.osm.pbf` files. |
 
 ---
 
@@ -427,11 +443,11 @@ When run, the scripts prompt:
 1. **Option 1 (Fresh Install - Destructive):**
    - Completely tears down all containers, dangling images, and volumes matching `routeops` and `osrm`.
    - Wipes `/data/*` and deletes `backend/osrm_portal.db`.
-   - Runs `python install.py`, which checks port availability (`5173`, `5172`, `5433`, `5001`, `5005`), prompts for new ports if busy, and launches `docker-compose.prod.yml`.
+   - Runs `python install.py`, which checks port availability (`5173`, `5172`, `5433`, `5001`, `5005`), prompts for new ports if busy, launches `docker-compose.prod.yml`, and prunes stopped containers, dangling images, and Docker build caches (`docker container/image/builder prune -f`).
 2. **Option 2 (Update Existing Deployment - Safe):**
    - Runs `git pull origin main`.
    - Executes `docker compose -f docker-compose.prod.yml up -d --build`.
-   - Runs `docker image prune -f`.
+   - Runs `docker container prune -f`, `docker image prune -f`, and `docker builder prune -f`.
    - **Preserves all map data, database overrides, and user accounts.**
 
 ### 8.2 Default Ports Matrix
@@ -510,6 +526,10 @@ When run, the scripts prompt:
 - **Port Configuration Persistence & Port Standardization:**
   - Fixed an issue where custom-configured ports for routing and geocoding engines were reverting to default values upon saving or container reload.
   - Standardized default geocoder host ports to avoid system collisions: **Pelias** is now mapped to default port `5002` (was `4000`), and **Nominatim** is now mapped to default port `5003` (was `8080`). Updated all compose files, status reporters, and client query routines.
+- **Automated Post-Installation Cleanup Across All Docker Engines:**
+  - Automatically removes raw state `.osm.pbf` files post-merge and removes merged engine PBF files (`car.osm.pbf`, `foot.osm.pbf`, `nominatim.osm.pbf`, `pelias.osm.pbf`) after each engine finishes compiling or indexing.
+  - Cleans internal container staging files and caches (`/nominatim/data.osm.pbf`, `/tmp/*`, `/var/tmp/*`, `/root/.npm`, `/var/lib/apt/lists/*`) and prunes exited build containers and dangling Docker images/builder caches.
+  - Added `.dockerignore` files and multi-stage layer cleanup to `backend/Dockerfile`, `frontend/Dockerfile`, and `frontend/Dockerfile.prod`.
 
 ### v2.3.0
 - **Deployment Safety & Stability:** Global error boundaries in background deployment tasks to gracefully abort, clean up partial states, and unlock the UI on download/merge failures.

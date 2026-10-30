@@ -930,6 +930,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                         for (let i = deployLogs.length - 1; i >= 0; i--) {
                                             const line = deployLogs[i].toLowerCase();
                                             if (line.includes('deployment complete!')) { progress = 100; break; }
+                                            else if (line.includes('[cleanup]')) { progress = 98; break; }
                                             else if (line.includes('rebuilding pelias')) { progress = 95; break; }
                                             else if (line.includes('recreating nominatim') || line.includes('restarting nominatim')) { progress = 90; break; }
                                             else if (line.includes('recreating osrm-foot container')) { progress = 90; break; }
@@ -1032,7 +1033,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                         let lineColor = 'var(--text-primary)';
                                         if (lower.includes('failed_records=0') || lower.includes('0 failed') || lower.includes('0 error')) {
                                             lineColor = 'var(--text-primary)';
-                                        } else if (lower.includes('deployment complete') || lower.includes('finished!') || lower.includes('success')) {
+                                        } else if (lower.includes('deployment complete') || lower.includes('finished!') || lower.includes('success') || lower.includes('[cleanup]')) {
                                             lineColor = '#10b981';
                                         } else if (lower.includes('failed') || lower.includes('error') || lower.includes('fatal') || lower.includes('exception')) {
                                             lineColor = '#ef4444';
