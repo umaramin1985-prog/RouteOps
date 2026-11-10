@@ -12,7 +12,7 @@
 **RouteOps** is an enterprise-grade transportation management and routing operations platform engineered around the **Open Source Routing Machine (OSRM)**, complemented by **Nominatim** and **Pelias** geocoding engines.
 
 The platform provides a modern command-center interface to:
-1. **Deploy and Manage Routing Engines on Demand:** Select any US state (or combination of states), download raw OpenStreetMap (`.osm.pbf`) data directly from Geofabrik, merge graphs using `osmium-tool`, and compile Multi-Level Dijkstra (MLD) routing graphs for both Driving (`car`) and Walking (`foot`) profiles inside isolated Docker containers.
+1. **Deploy and Manage Routing Engines on Demand:** Select the **Entire Planet** (`planet`), any **Continent**, any **World Country**, or any **US State** (or combination of regions), download raw OpenStreetMap (`.osm.pbf`) data directly from Planet OSM or Geofabrik, merge graphs using `osmium-tool`, and compile Multi-Level Dijkstra (MLD) routing graphs for both Driving (`car`) and Walking (`foot`) profiles inside isolated Docker containers.
 2. **Execute Zero-Downtime Map Updates:** Add or remove state maps on-the-fly. The backend compiles the new graph in the background and dynamically swaps it into running containers via shared memory (`/dev/shm` and `osrm-datastore`) without dropping in-flight navigation requests.
 3. **Perform Zero-Downtime Hot-Swapping Road Overrides:** Click any road segment on the live map to enforce custom speed limits or full road closures. Changes are instantly injected into the routing graph via `osrm-customize` and `osrm-datastore` without restarting containers.
 4. **Inspect & Manage Road Overrides:** The **Active Edits** tab provides a paginated, searchable grid of all active road closures and speed adjustments, with geographic coordinate filtering, road/city metadata, and one-click removal.
@@ -146,11 +146,12 @@ c:\Code\OSRM 2\
 │       ├── App.tsx                 # App router, theme initialization, ProtectedRoute
 │       ├── App.css                 # Base application animations and keyframes
 │       ├── index.css               # Core CSS design system: dark/light theme variables, glassmorphism
-│       ├── stateBounds.json        # Detailed coordinate bounds for all 50 US states
+│       ├── stateBounds.json        # Coordinate bounds for Entire Planet, Continents, World Countries & US States
 │       ├── us-states.json          # GeoJSON boundaries of all US states for map overlays
 │       ├── assets/                 # App icons and hero images
 │       ├── utils/
-│       │   └── geocoding.ts        # Search & reverse geocoding client, telemetry logging, multi-provider fallbacks
+│       │   ├── geocoding.ts        # Search & reverse geocoding client, telemetry logging, local-only engine routing
+│       │   └── regionsCatalog.ts   # Global catalog (Entire Planet, 8 Continents, 190+ Countries, 53 US States)
 │       └── components/
 │           ├── Login.tsx           # Authentication view (admin/guest login, password recovery)
 │           ├── Dashboard.tsx       # Top navbar, tab router (#setup, #map, #edits), DB status, theme toggle
@@ -340,9 +341,9 @@ On startup (`@app.on_event("startup")`):
   - Interactive CLI input allowing direct execution of `docker` commands.
   - Fullscreen toggle for terminal view.
 - **Engine Configuration Modal:**
-  - Multi-tab state selector (`car`, `foot`, `nominatim`, `pelias`) allowing independent state selection per engine.
-  - Quick **Select All** and **Deselect All** buttons for multi-state batch configuration.
-  - Search filter across all 50 US states.
+  - Global region selector (`car`, `foot`, `nominatim`, `pelias`) supporting **Entire Planet** (`planet`), **Continents**, **World Countries**, and **US States & Territories**.
+  - Category filter pills (`All Regions`, `Planet & Continents`, `US States`, `Americas`, `Europe`, `Asia`, `Africa`, `Oceania`) and real-time search.
+  - Quick **Select Entire Planet**, **Select Visible**, and **Unselect All** buttons for batch configuration.
   - Dual action buttons: "Update States (Zero Downtime)" and "Destroy Existing Containers & Deploy Fresh Setup".
 
 #### 4. `MapDisplay.tsx`

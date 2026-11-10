@@ -40,6 +40,7 @@ import stateBounds from '../stateBounds.json';
 import usStatesGeoJson from '../us-states.json';
 import { searchPlaces, reverseGeocode } from '../utils/geocoding';
 import type { PlaceResult } from '../utils/geocoding';
+import { getRegionName } from '../utils/regionsCatalog';
 
 // Fix Leaflet marker icons
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -2131,7 +2132,7 @@ export default function MapDisplay({
                 >
                   {currentProfileStates.map((st: string) => (
                     <option key={st} value={st}>
-                      {st.charAt(0).toUpperCase() + st.slice(1).replace('-', ' ')}
+                      {getRegionName(st)}
                     </option>
                   ))}
                 </select>

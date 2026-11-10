@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Trash2, Search, ChevronLeft, ChevronRight, Map } from 'lucide-react';
 import stateBounds from '../stateBounds.json';
+import { getRegionName } from '../utils/regionsCatalog';
 
 export default function ActiveEdits({ activeStates = [] }: { activeStates?: string[] }) {
     const role = localStorage.getItem('role') || 'admin';
@@ -129,9 +130,9 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                             onChange={(e) => setSelectedStateFilter(e.target.value)}
                             style={{ width: '100%', height: '40px', padding: '0 40px 0 16px', borderRadius: '8px', border: '1px solid var(--input-border)', background: 'var(--input-bg)', color: 'var(--text-primary)', outline: 'none', appearance: 'none', cursor: 'pointer', fontSize: '14px', boxSizing: 'border-box' }}
                         >
-                            <option value="all">All Active States</option>
+                            <option value="all">All Active Regions</option>
                             {activeStates.map(s => (
-                                <option key={s} value={s}>{s.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}</option>
+                                <option key={s} value={s}>{getRegionName(s)}</option>
                             ))}
                         </select>
                         <ChevronRight size={16} style={{ position: 'absolute', right: '16px', top: '50%', transform: 'translateY(-50%) rotate(90deg)', color: 'var(--text-secondary)', pointerEvents: 'none' }} />

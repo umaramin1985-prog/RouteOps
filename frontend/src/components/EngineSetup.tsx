@@ -1,64 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, AlertTriangle, Maximize, Minimize, Settings } from 'lucide-react';
+import { Search, AlertTriangle, Maximize, Minimize, Settings, Globe } from 'lucide-react';
 import { AreaChart, Area, Tooltip, ResponsiveContainer, YAxis } from 'recharts';
 import { recordApiCall } from '../utils/geocoding';
-
-const US_STATES = [
-    { id: 'alabama', name: 'Alabama' },
-    { id: 'alaska', name: 'Alaska' },
-    { id: 'arizona', name: 'Arizona' },
-    { id: 'arkansas', name: 'Arkansas' },
-    { id: 'california', name: 'California' },
-    { id: 'colorado', name: 'Colorado' },
-    { id: 'connecticut', name: 'Connecticut' },
-    { id: 'delaware', name: 'Delaware' },
-    { id: 'district-of-columbia', name: 'District of Columbia' },
-    { id: 'florida', name: 'Florida' },
-    { id: 'georgia', name: 'Georgia' },
-    { id: 'hawaii', name: 'Hawaii' },
-    { id: 'idaho', name: 'Idaho' },
-    { id: 'illinois', name: 'Illinois' },
-    { id: 'indiana', name: 'Indiana' },
-    { id: 'iowa', name: 'Iowa' },
-    { id: 'kansas', name: 'Kansas' },
-    { id: 'kentucky', name: 'Kentucky' },
-    { id: 'louisiana', name: 'Louisiana' },
-    { id: 'maine', name: 'Maine' },
-    { id: 'maryland', name: 'Maryland' },
-    { id: 'massachusetts', name: 'Massachusetts' },
-    { id: 'michigan', name: 'Michigan' },
-    { id: 'minnesota', name: 'Minnesota' },
-    { id: 'mississippi', name: 'Mississippi' },
-    { id: 'missouri', name: 'Missouri' },
-    { id: 'montana', name: 'Montana' },
-    { id: 'nebraska', name: 'Nebraska' },
-    { id: 'nevada', name: 'Nevada' },
-    { id: 'new-hampshire', name: 'New Hampshire' },
-    { id: 'new-jersey', name: 'New Jersey' },
-    { id: 'new-mexico', name: 'New Mexico' },
-    { id: 'new-york', name: 'New York' },
-    { id: 'north-carolina', name: 'North Carolina' },
-    { id: 'north-dakota', name: 'North Dakota' },
-    { id: 'ohio', name: 'Ohio' },
-    { id: 'oklahoma', name: 'Oklahoma' },
-    { id: 'oregon', name: 'Oregon' },
-    { id: 'pennsylvania', name: 'Pennsylvania' },
-    { id: 'puerto-rico', name: 'Puerto Rico' },
-    { id: 'rhode-island', name: 'Rhode Island' },
-    { id: 'south-carolina', name: 'South Carolina' },
-    { id: 'south-dakota', name: 'South Dakota' },
-    { id: 'tennessee', name: 'Tennessee' },
-    { id: 'texas', name: 'Texas' },
-    { id: 'us-virgin-islands', name: 'United States Virgin Islands' },
-    { id: 'utah', name: 'Utah' },
-    { id: 'vermont', name: 'Vermont' },
-    { id: 'virginia', name: 'Virginia' },
-    { id: 'washington', name: 'Washington' },
-    { id: 'west-virginia', name: 'West Virginia' },
-    { id: 'wisconsin', name: 'Wisconsin' },
-    { id: 'wyoming', name: 'Wyoming' }
-];
+import { WORLD_REGIONS, REGION_CATEGORIES, getRegionName } from '../utils/regionsCatalog';
 
 function formatUptime(startedAt: string | null | undefined): string {
     if (!startedAt) return 'N/A';
@@ -114,6 +59,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const [peliasPort, setPeliasPort] = useState<number>(5002);
 
     const [searchQuery, setSearchQuery] = useState('');
+    const [regionCategory, setRegionCategory] = useState<string>('all');
     const [showModal, setShowModal] = useState(false);
     const [modalPort, setModalPort] = useState<string>('5001');
     const showModalRef = useRef(showModal);
@@ -145,32 +91,54 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         }
     }, [apiCalls, deployLogs, viewMode]);
 
+    const getVisibleRegions = () => {
+        return WORLD_REGIONS.filter(r => {
+            const matchesCategory =
+                regionCategory === 'all' ||
+                (regionCategory === 'global-continent' && (r.category === 'global' || r.category === 'continent')) ||
+                r.category === regionCategory;
+            const q = searchQuery.toLowerCase().trim();
+            const matchesSearch = !q || r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q);
+            return matchesCategory && matchesSearch;
+        });
+    };
+
     const toggleState = (sid: string) => {
         setSelectedStates(prev => {
             const currentTabStates = prev[modalTab] || [];
-            if (currentTabStates.includes(sid)) {
-                return { ...prev, [modalTab]: currentTabStates.filter(s => s !== sid) };
+            if (sid === 'planet') {
+                if (currentTabStates.includes('planet')) {
+                    return { ...prev, [modalTab]: [] };
+                } else {
+                    return { ...prev, [modalTab]: ['planet'] };
+                }
+            }
+            const withoutPlanet = currentTabStates.filter(s => s !== 'planet');
+            if (withoutPlanet.includes(sid)) {
+                return { ...prev, [modalTab]: withoutPlanet.filter(s => s !== sid) };
             } else {
-                return { ...prev, [modalTab]: [...currentTabStates, sid] };
+                return { ...prev, [modalTab]: [...withoutPlanet, sid] };
             }
         });
     };
 
     const handleSelectAll = () => {
-        const visibleStates = US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(s => s.id);
+        const visibleRegions = getVisibleRegions()
+            .filter(s => s.id !== 'planet')
+            .map(s => s.id);
         setSelectedStates(prev => {
-            const currentTabStates = prev[modalTab] || [];
-            const combined = Array.from(new Set([...currentTabStates, ...visibleStates]));
+            const currentTabStates = (prev[modalTab] || []).filter(s => s !== 'planet');
+            const combined = Array.from(new Set([...currentTabStates, ...visibleRegions]));
             return { ...prev, [modalTab]: combined };
         });
     };
 
     const handleUnselectAll = () => {
-        if (searchQuery.trim()) {
-            const visibleStateIds = new Set(US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(s => s.id));
+        if (searchQuery.trim() || regionCategory !== 'all') {
+            const visibleIds = new Set(getVisibleRegions().map(s => s.id));
             setSelectedStates(prev => {
                 const currentTabStates = prev[modalTab] || [];
-                return { ...prev, [modalTab]: currentTabStates.filter(id => !visibleStateIds.has(id)) };
+                return { ...prev, [modalTab]: currentTabStates.filter(id => !visibleIds.has(id)) };
             });
         } else {
             setSelectedStates(prev => ({ ...prev, [modalTab]: [] }));
@@ -499,15 +467,16 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const renderInstalledStates = (profile: 'car' | 'foot' | 'nominatim' | 'pelias') => {
         const states = activeStates[profile] || [];
         const logSize = formatBytes((dockerStatus as any)?.[`${profile}_log_size`]);
+        const isPlanet = states.includes('planet');
         
         return (
             <div style={{ marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div 
-                    style={{ fontSize: '11px', color: states.length > 0 ? '#3b82f6' : 'var(--text-secondary)', cursor: states.length > 0 ? 'pointer' : 'default', textDecoration: states.length > 0 ? 'underline' : 'none' }}
+                    style={{ fontSize: '11px', color: states.length > 0 ? (isPlanet ? '#10b981' : '#3b82f6') : 'var(--text-secondary)', cursor: states.length > 0 ? 'pointer' : 'default', textDecoration: states.length > 0 ? 'underline' : 'none', fontWeight: isPlanet ? 600 : 400 }}
                     onClick={() => states.length > 0 && setStatesPopup({ profile, states })}
-                    title={states.length > 0 ? "Click to view installed states" : ""}
+                    title={states.length > 0 ? "Click to view installed regions" : ""}
                 >
-                    {states.length} Installed State{states.length !== 1 ? 's' : ''}
+                    {isPlanet ? 'Entire Planet Installed' : `${states.length} Installed Region${states.length !== 1 ? 's' : ''}`}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                     Log Size: <span style={{ color: 'var(--text-primary)' }}>{logSize}</span>
@@ -1074,10 +1043,32 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
 
                             <div style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                                 <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                                            <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0 }}>1. Select States</h3>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '12px', flexWrap: 'wrap' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                                            <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0 }}>1. Select Planet, Continents, Countries or States</h3>
                                             <div style={{ display: 'flex', gap: '8px' }}>
+                                                <button
+                                                    type="button"
+                                                    disabled={role === "guest"}
+                                                    onClick={() => toggleState('planet')}
+                                                    style={{
+                                                        background: (selectedStates[modalTab] || []).includes('planet') ? 'rgba(16,185,129,0.2)' : 'rgba(16,185,129,0.08)',
+                                                        border: `1px solid ${(selectedStates[modalTab] || []).includes('planet') ? '#10b981' : 'rgba(16,185,129,0.35)'}`,
+                                                        color: '#10b981',
+                                                        padding: '4px 10px',
+                                                        fontSize: '11px',
+                                                        fontWeight: 600,
+                                                        cursor: role === "guest" ? 'not-allowed' : 'pointer',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '5px',
+                                                        transition: 'all 0.15s'
+                                                    }}
+                                                    title="Select Entire Planet (Global OSM extract)"
+                                                >
+                                                    <Globe size={12} />
+                                                    {(selectedStates[modalTab] || []).includes('planet') ? 'Entire Planet Selected' : 'Select Entire Planet'}
+                                                </button>
                                                 <button
                                                     type="button"
                                                     disabled={role === "guest"}
@@ -1095,7 +1086,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                                     onMouseOver={e => { if (role !== "guest") e.currentTarget.style.background = 'rgba(59,130,246,0.2)' }}
                                                     onMouseOut={e => { if (role !== "guest") e.currentTarget.style.background = 'rgba(59,130,246,0.1)' }}
                                                 >
-                                                    Select All
+                                                    Select Visible
                                                 </button>
                                                 <button
                                                     type="button"
@@ -1118,39 +1109,87 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                                 </button>
                                             </div>
                                         </div>
-                                        <div style={{ background: 'var(--panel-inner-bg)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--panel-border)', width: '250px' }}>
+                                        <div style={{ background: 'var(--panel-inner-bg)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--panel-border)', width: '260px' }}>
                                             <Search size={14} color="#6b7280" />
-                                            <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search states..." style={{ background: 'transparent', border: 'none', color: 'white', width: '100%', outline: 'none', fontSize: '12px' }} />
+                                            <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search planet, continent, country, state..." style={{ background: 'transparent', border: 'none', color: 'white', width: '100%', outline: 'none', fontSize: '12px' }} />
                                         </div>
                                     </div>
-                                    {/* Tabs removed to isolate configuration to a single engine at a time */}
+
+                                    {/* Region Category Filter Tabs */}
+                                    <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                        {REGION_CATEGORIES.map(cat => {
+                                            const active = regionCategory === cat.id;
+                                            return (
+                                                <button
+                                                    key={cat.id}
+                                                    type="button"
+                                                    onClick={() => setRegionCategory(cat.id)}
+                                                    style={{
+                                                        background: active ? 'rgba(59,130,246,0.2)' : 'rgba(255,255,255,0.03)',
+                                                        border: `1px solid ${active ? '#3b82f6' : 'var(--panel-border)'}`,
+                                                        color: active ? '#60a5fa' : 'var(--text-secondary)',
+                                                        padding: '5px 10px',
+                                                        fontSize: '11px',
+                                                        fontWeight: active ? 600 : 500,
+                                                        cursor: 'pointer',
+                                                        transition: 'all 0.15s'
+                                                    }}
+                                                >
+                                                    {cat.label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
 
                                     {(selectedStates[modalTab] || []).length > 0 && (
-                                        <div style={{ marginBottom: '12px', fontSize: '12px', color: '#3b82f6', background: 'rgba(59,130,246,0.1)', padding: '8px 12px', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div style={{ marginBottom: '12px', fontSize: '12px', color: (selectedStates[modalTab] || []).includes('planet') ? '#10b981' : '#3b82f6', background: (selectedStates[modalTab] || []).includes('planet') ? 'rgba(16,185,129,0.1)' : 'rgba(59,130,246,0.1)', padding: '8px 12px', border: `1px solid ${(selectedStates[modalTab] || []).includes('planet') ? 'rgba(16,185,129,0.3)' : 'rgba(59,130,246,0.2)'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: '12px' }}>
                                                 <strong>Selected ({(selectedStates[modalTab] || []).length}): </strong>
-                                                {(selectedStates[modalTab] || []).length === US_STATES.length
-                                                    ? `All States Selected (${US_STATES.length})`
-                                                    : (selectedStates[modalTab] || []).map((s: string) => US_STATES.find(us => us.id === s)?.name).join(', ')}
+                                                {(selectedStates[modalTab] || []).map((s: string) => getRegionName(s)).join(', ')}
                                             </span>
                                             <button disabled={role === "guest"} onClick={() => setSelectedStates(prev => ({...prev, [modalTab]: []}))} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 600, flexShrink: 0 }}>Clear {modalTab.toUpperCase()}</button>
                                         </div>
                                     )}
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: '4px', alignContent: 'start' }}>
-                                        {US_STATES.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(state => {
+                                        {getVisibleRegions().map(state => {
                                             const currentTabStates = selectedStates[modalTab] || [];
                                             const isSelected = currentTabStates.includes(state.id);
+                                            const isPlanet = state.id === 'planet';
+                                            const isContinent = state.category === 'continent';
+                                            const activeColor = isPlanet ? '#10b981' : isContinent ? '#f59e0b' : '#3b82f6';
+                                            const activeBg = isPlanet ? 'rgba(16,185,129,0.12)' : isContinent ? 'rgba(245,158,11,0.12)' : 'rgba(59,130,246,0.1)';
                                             return (
                                                 <div
                                                     key={state.id}
                                                     onClick={() => toggleState(state.id)}
                                                     style={{
-                                                        background: isSelected ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.02)',
-                                                        border: `1px solid ${isSelected ? '#3b82f6' : 'var(--panel-inner-bg)'}`,
-                                                        padding: '12px', cursor: 'pointer', fontSize: '12px', color: isSelected ? '#3b82f6' : '#d1d5db'
+                                                        background: isSelected ? activeBg : isPlanet ? 'rgba(16,185,129,0.04)' : 'rgba(255,255,255,0.02)',
+                                                        border: `1px solid ${isSelected ? activeColor : isPlanet ? 'rgba(16,185,129,0.3)' : 'var(--panel-inner-bg)'}`,
+                                                        padding: '10px 12px',
+                                                        cursor: 'pointer',
+                                                        fontSize: '12px',
+                                                        color: isSelected ? activeColor : '#d1d5db',
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        alignItems: 'center',
+                                                        gap: '6px'
                                                     }}
                                                 >
-                                                    {state.name}
+                                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isPlanet || isContinent ? 600 : 400 }}>
+                                                        {state.name}
+                                                    </span>
+                                                    {state.badge && (
+                                                        <span style={{
+                                                            fontSize: '9px',
+                                                            fontWeight: 700,
+                                                            padding: '2px 5px',
+                                                            background: isPlanet ? 'rgba(16,185,129,0.18)' : isContinent ? 'rgba(245,158,11,0.18)' : 'rgba(255,255,255,0.06)',
+                                                            color: isPlanet ? '#10b981' : isContinent ? '#f59e0b' : 'var(--text-secondary)',
+                                                            flexShrink: 0
+                                                        }}>
+                                                            {state.badge}
+                                                        </span>
+                                                    )}
                                                 </div>
                                             );
                                         })}
@@ -1233,18 +1272,19 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                         <div style={{ background: 'var(--panel-bg)', width: '500px', maxWidth: '90vw', maxHeight: '80vh', border: '1px solid var(--panel-border)', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)', display: 'flex', flexDirection: 'column' }}>
                             <div style={{ padding: '20px', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', textTransform: 'capitalize' }}>
-                                    {statesPopup.profile} Installed States ({statesPopup.states.length})
+                                    {statesPopup.profile} Installed Regions ({statesPopup.states.length})
                                 </h2>
                                 <button onClick={() => setStatesPopup(null)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '18px' }}>X</button>
                             </div>
                             <div style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                                 {statesPopup.states.map((sid: string) => {
-                                    const state = US_STATES.find(s => s.id === sid);
-                                    return state ? (
-                                        <div key={sid} style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.2)', padding: '6px 12px', fontSize: '12px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
-                                            {state.name}
+                                    const name = getRegionName(sid);
+                                    const isPlanet = sid === 'planet';
+                                    return (
+                                        <div key={sid} style={{ background: isPlanet ? 'rgba(16,185,129,0.12)' : 'rgba(59,130,246,0.1)', color: isPlanet ? '#10b981' : '#3b82f6', border: `1px solid ${isPlanet ? 'rgba(16,185,129,0.3)' : 'rgba(59,130,246,0.2)'}`, padding: '6px 12px', fontSize: '12px', borderRadius: '4px', whiteSpace: 'nowrap', fontWeight: isPlanet ? 600 : 400 }}>
+                                            {name}
                                         </div>
-                                    ) : null;
+                                    );
                                 })}
                             </div>
                         </div>

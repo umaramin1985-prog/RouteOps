@@ -617,6 +617,34 @@ def setup_pelias_schema(client, mounts):
         return False
     return True
 
+TOP_LEVEL_GEOFABRIK_REGIONS = {
+    'africa', 'antarctica', 'asia', 'australia-oceania',
+    'central-america', 'europe', 'north-america', 'south-america', 'russia'
+}
+
+def get_geofabrik_url(region_id: str) -> str:
+    """Resolves a region ID (planet, continent, country path, or US state) to its OSM PBF download URL."""
+    if region_id == 'planet':
+        return 'https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf'
+    if region_id in TOP_LEVEL_GEOFABRIK_REGIONS or '/' in region_id:
+        return f'https://download.geofabrik.de/{region_id}-latest.osm.pbf'
+    if region_id.startswith('us-') and region_id != 'us-virgin-islands':
+        return f'https://download.geofabrik.de/north-america/{region_id}-latest.osm.pbf'
+    return f'https://download.geofabrik.de/north-america/us/{region_id}-latest.osm.pbf'
+
+def get_region_pbf_filename(region_id: str) -> str:
+    """Returns a flat, filesystem-safe filename for a region's raw PBF in /data."""
+    safe_slug = region_id.replace('/', '__')
+    return f'{safe_slug}.osm.pbf'
+
+def normalize_region_list(regions: list) -> list:
+    """If 'planet' is selected alongside sub-regions, only 'planet' is needed since it contains the entire world."""
+    if not regions:
+        return []
+    if 'planet' in regions:
+        return ['planet']
+    return list(dict.fromkeys(regions))
+
 def cleanup_raw_state_pbfs(data_dir: str, keep_files: set = None):
     """Removes raw state .osm.pbf files from /data once merging/extraction is complete."""
     if keep_files is None:
@@ -982,12 +1010,13 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
         all_states = set()
         for profile, s_list in states_dict.items():
             if engines.get(profile, True) and s_list:
-                for s in s_list:
+                for s in normalize_region_list(s_list):
                     all_states.add(s)
                 
         for state in all_states:
-            url = f'https://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
-            file_path = os.path.join(data_dir, f'{state}.osm.pbf')
+            url = get_geofabrik_url(state)
+            pbf_filename = get_region_pbf_filename(state)
+            file_path = os.path.join(data_dir, pbf_filename)
             
             if not force_download and os.path.exists(file_path):
                 log_msg(f'Using cached map data for {state}...')
@@ -1027,18 +1056,20 @@ def merge_states(req: MergeRequest, background_tasks: BackgroundTasks):
         import shutil
         client = docker.from_env()
         
-        for profile, states_req in states_dict.items():
+        for profile, raw_states_req in states_dict.items():
+            states_req = normalize_region_list(raw_states_req)
             if not states_req or not engines.get(profile, True):
                 continue
                 
             out_file = f'/data/{profile}.osm.pbf'
             host_out_file = os.path.join(data_dir, f'{profile}.osm.pbf')
             if len(states_req) == 1:
-                shutil.copy(os.path.join(data_dir, f'{states_req[0]}.osm.pbf'), host_out_file)
+                src_pbf = os.path.join(data_dir, get_region_pbf_filename(states_req[0]))
+                shutil.copy(src_pbf, host_out_file)
                 log_msg(f'Copied {states_req[0]} to {profile}.osm.pbf')
             elif len(states_req) > 1:
                 log_msg(f'Merging files for {profile} using osmium-tool...')
-                files_to_merge = [f'/data/{s}.osm.pbf' for s in states_req]
+                files_to_merge = [f'/data/{get_region_pbf_filename(s)}' for s in states_req]
                 command = ['osmium', 'merge'] + files_to_merge + ['-o', out_file, '-O']
                 try:
                     stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
@@ -1206,12 +1237,13 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
         all_states = set()
         for profile, s_list in states_dict.items():
             if engines.get(profile, True) and s_list:
-                for s in s_list:
+                for s in normalize_region_list(s_list):
                     all_states.add(s)
                 
         for state in all_states:
-            url = f'https://download.geofabrik.de/north-america/us/{state}-latest.osm.pbf'
-            file_path = os.path.join(data_dir, f'{state}.osm.pbf')
+            url = get_geofabrik_url(state)
+            pbf_filename = get_region_pbf_filename(state)
+            file_path = os.path.join(data_dir, pbf_filename)
             
             if not force_download and os.path.exists(file_path):
                 log_msg(f'Using cached map data for {state}...')
@@ -1251,18 +1283,20 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
         import shutil
         client = docker.from_env()
         
-        for profile, states_req in states_dict.items():
+        for profile, raw_states_req in states_dict.items():
+            states_req = normalize_region_list(raw_states_req)
             if not states_req or not engines.get(profile, True):
                 continue
                 
             out_file = f'/data/{profile}.osm.pbf'
             host_out_file = os.path.join(data_dir, f'{profile}.osm.pbf')
             if len(states_req) == 1:
-                shutil.copy(os.path.join(data_dir, f'{states_req[0]}.osm.pbf'), host_out_file)
+                src_pbf = os.path.join(data_dir, get_region_pbf_filename(states_req[0]))
+                shutil.copy(src_pbf, host_out_file)
                 log_msg(f'Copied {states_req[0]} to {profile}.osm.pbf')
             elif len(states_req) > 1:
                 log_msg(f'Merging files for {profile} using osmium-tool...')
-                files_to_merge = [f'/data/{s}.osm.pbf' for s in states_req]
+                files_to_merge = [f'/data/{get_region_pbf_filename(s)}' for s in states_req]
                 command = ['osmium', 'merge'] + files_to_merge + ['-o', out_file, '-O']
                 try:
                     stream_container_logs(client, 'stefda/osmium-tool', command, **get_docker_mounts())
