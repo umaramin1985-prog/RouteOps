@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends, BackgroundTasks
+from fastapi import FastAPI, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import docker
 import os
@@ -707,6 +708,189 @@ def cleanup_engine_files(client, data_dir: str, profile: str, container_names: l
     except Exception as e:
         log_msg(f'Notice during {profile} cleanup: {e}')
 
+# ==========================================================================
+# OSM maxspeed index (node-pair -> maxspeed) used to enrich OSRM responses
+# ==========================================================================
+
+MPH_TO_KMH = 1.609344
+KNOTS_TO_KMH = 1.852
+
+# All speed values are taken verbatim from the OSM `maxspeed` tags in the engine's .osm.pbf.
+# No hardcoded/assumed speeds: implicit zone codes (e.g. `DE:urban`, `GB:nsl_single`) are
+# returned as-is (`implicit: true` + raw tag) without inventing a numeric value.
+
+def get_maxspeed_db_path(profile: str) -> str:
+    return os.path.join(get_data_dir(), f'{profile}_maxspeed.sqlite')
+
+def parse_maxspeed(raw):
+    """Parses an OSM maxspeed tag value. Returns (kmh or None, is_unlimited).
+
+    Only explicit numeric OSM values are converted (unit-aware: km/h default, mph, knots).
+    `none` (the OSM value for "no speed limit") marks the segment as unlimited.
+    """
+    import re
+    if raw is None:
+        return None, False
+    best = None
+    unlimited = False
+    for part in str(raw).split(';'):
+        p = part.strip().lower()
+        if not p:
+            continue
+        if p == 'none':
+            unlimited = True
+            continue
+        m = re.match(r'^(\d+(?:\.\d+)?)\s*(mph|km/h|kmh|kph|knots)?$', p)
+        if not m:
+            continue
+        kmh = float(m.group(1))
+        if m.group(2) == 'mph':
+            kmh *= MPH_TO_KMH
+        elif m.group(2) == 'knots':
+            kmh *= KNOTS_TO_KMH
+        if best is None or kmh > best:
+            best = kmh
+    return best, unlimited
+
+def _opl_unescape(s: str) -> str:
+    import re
+    return re.sub(r'%([0-9a-fA-F]+)%', lambda m: chr(int(m.group(1), 16)), s)
+
+def build_maxspeed_index(client, data_dir: str, profile: str) -> bool:
+    """Builds /data/{profile}_maxspeed.sqlite from /data/{profile}.osm.pbf.
+
+    Extracts all ways tagged maxspeed / maxspeed:forward / maxspeed:backward with osmium-tool,
+    then stores directed (from_node, to_node) -> maxspeed rows so OSRM `annotations=nodes`
+    output can be mapped back to the legal OSM speed limit of every route segment.
+    Must run before the engine's .osm.pbf is cleaned up.
+    """
+    import sqlite3
+    pbf_path = os.path.join(data_dir, f'{profile}.osm.pbf')
+    if not os.path.exists(pbf_path):
+        return False
+
+    filtered_name = f'{profile}_maxspeed_ways.osm.pbf'
+    opl_name = f'{profile}_maxspeed_ways.opl'
+    filtered_path = os.path.join(data_dir, filtered_name)
+    opl_path = os.path.join(data_dir, opl_name)
+    db_path = os.path.join(data_dir, f'{profile}_maxspeed.sqlite')
+    tmp_db_path = db_path + '.tmp'
+
+    try:
+        log_msg(f'[MAXSPEED] Building maxspeed index for {profile.upper()} (filtering maxspeed-tagged ways)...')
+        ok = stream_container_logs(
+            client, 'stefda/osmium-tool',
+            ['osmium', 'tags-filter', f'/data/{profile}.osm.pbf',
+             'w/maxspeed', 'w/maxspeed:forward', 'w/maxspeed:backward',
+             '-R', '-o', f'/data/{filtered_name}', '-O'],
+            **get_docker_mounts()
+        )
+        if not ok or not os.path.exists(filtered_path):
+            log_msg(f'Warning: maxspeed way filtering failed for {profile.upper()}; maxspeed will be reported as unknown.')
+            return False
+
+        ok = stream_container_logs(
+            client, 'stefda/osmium-tool',
+            ['osmium', 'cat', f'/data/{filtered_name}', '-t', 'way', '-f', 'opl', '-o', f'/data/{opl_name}', '-O'],
+            **get_docker_mounts()
+        )
+        if not ok or not os.path.exists(opl_path):
+            log_msg(f'Warning: maxspeed OPL export failed for {profile.upper()}; maxspeed will be reported as unknown.')
+            return False
+
+        if os.path.exists(tmp_db_path):
+            os.remove(tmp_db_path)
+        conn = sqlite3.connect(tmp_db_path)
+        conn.execute('PRAGMA journal_mode=OFF')
+        conn.execute('PRAGMA synchronous=OFF')
+        conn.execute('CREATE TABLE vals (id INTEGER PRIMARY KEY, kmh REAL, is_unlimited INTEGER NOT NULL DEFAULT 0, raw TEXT NOT NULL)')
+        conn.execute('CREATE TABLE seg (a INTEGER NOT NULL, b INTEGER NOT NULL, v INTEGER NOT NULL)')
+
+        val_ids = {}
+        def get_val_id(raw_val):
+            if raw_val is None:
+                return None
+            raw_val = raw_val.strip()
+            if not raw_val:
+                return None
+            vid = val_ids.get(raw_val)
+            if vid is None:
+                kmh, unlimited = parse_maxspeed(raw_val)
+                vid = len(val_ids) + 1
+                val_ids[raw_val] = vid
+                conn.execute('INSERT INTO vals (id, kmh, is_unlimited, raw) VALUES (?, ?, ?, ?)', (vid, kmh, 1 if unlimited else 0, raw_val))
+            return vid
+
+        batch = []
+        way_count = 0
+        seg_count = 0
+        with open(opl_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if not line.startswith('w'):
+                    continue
+                tags_field = None
+                nodes_field = None
+                for field in line.rstrip('\r\n').split(' '):
+                    if field.startswith('T'):
+                        tags_field = field[1:]
+                    elif field.startswith('N'):
+                        nodes_field = field[1:]
+                if not tags_field or not nodes_field:
+                    continue
+
+                tags = {}
+                for kv in tags_field.split(','):
+                    if '=' in kv:
+                        k, v = kv.split('=', 1)
+                        tags[_opl_unescape(k)] = _opl_unescape(v)
+
+                base = tags.get('maxspeed')
+                fwd_id = get_val_id(tags.get('maxspeed:forward', base))
+                bwd_id = get_val_id(tags.get('maxspeed:backward', base))
+                if fwd_id is None and bwd_id is None:
+                    continue
+
+                try:
+                    nodes = [int(n[1:]) for n in nodes_field.split(',') if n.startswith('n')]
+                except ValueError:
+                    continue
+                if len(nodes) < 2:
+                    continue
+
+                for i in range(len(nodes) - 1):
+                    if fwd_id is not None:
+                        batch.append((nodes[i], nodes[i + 1], fwd_id))
+                    if bwd_id is not None:
+                        batch.append((nodes[i + 1], nodes[i], bwd_id))
+                way_count += 1
+
+                if len(batch) >= 200000:
+                    conn.executemany('INSERT INTO seg (a, b, v) VALUES (?, ?, ?)', batch)
+                    seg_count += len(batch)
+                    batch.clear()
+
+        if batch:
+            conn.executemany('INSERT INTO seg (a, b, v) VALUES (?, ?, ?)', batch)
+            seg_count += len(batch)
+            batch.clear()
+
+        conn.execute('CREATE INDEX seg_ab ON seg (a, b)')
+        conn.commit()
+        conn.close()
+        os.replace(tmp_db_path, db_path)
+        log_msg(f'[MAXSPEED] Indexed {way_count} ways ({seg_count} directed segments) for {profile.upper()} maxspeed lookups.')
+        return True
+    except Exception as e:
+        log_msg(f'Warning: Failed to build maxspeed index for {profile.upper()}: {e}')
+        return False
+    finally:
+        for p in (filtered_path, opl_path, tmp_db_path):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
 def wait_for_nominatim_and_cleanup(client, data_dir: str, container_name: str = 'routeops-nominatim-1', timeout: int = 1800):
     """Waits for Nominatim PBF import to finish and cleans up unnecessary PBF and temporary files."""
     import time
@@ -862,6 +1046,7 @@ def process_deploy(car_port: int, foot_port: int, engines: dict = None, standalo
                 if has_speeds:
                     cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
 
+                build_maxspeed_index(client, data_dir, 'car')
                 log_msg('Running OSRM Extract for CAR...')
                 stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
                 log_msg('Running OSRM Partition for CAR...')
@@ -878,6 +1063,7 @@ def process_deploy(car_port: int, foot_port: int, engines: dict = None, standalo
                 if has_speeds:
                     cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
 
+                build_maxspeed_index(client, data_dir, 'foot')
                 log_msg('Running OSRM Extract for FOOT...')
                 stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
                 log_msg('Running OSRM Partition for FOOT...')
@@ -924,6 +1110,176 @@ def process_deploy(car_port: int, foot_port: int, engines: dict = None, standalo
 def deploy_osrm(req: DeployRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(process_deploy, req.car_port, req.foot_port)
     return {'status': 'Deploying...'}
+
+# ==========================================================================
+# OSRM proxy with OSM maxspeed enrichment
+#   GET /osrm/{car|foot}/{service}/v1/{osrm_profile}/{coordinates}?{osrm query}
+#   (via frontend: /api/osrm/...)
+# ==========================================================================
+
+_osrm_base_url_cache = {}
+
+def get_osrm_base_url(profile: str, refresh: bool = False) -> str:
+    """Resolves a URL the backend can use to reach the running OSRM container for a profile."""
+    import time
+    cached = _osrm_base_url_cache.get(profile)
+    if cached and not refresh and time.time() - cached[1] < 30:
+        return cached[0]
+
+    port = get_saved_ports().get(profile, 5001 if profile == 'car' else 5005)
+    url = f'http://localhost:{port}'
+    if os.path.exists('/.dockerenv'):
+        url = f'http://host.docker.internal:{port}'
+        try:
+            client = docker.from_env()
+            osrm_c = next((c for c in client.containers.list() if f'osrm-{profile}' in c.name), None)
+            if osrm_c:
+                # Attach the OSRM container to the backend's network so it is reachable by name.
+                me = client.containers.get(os.environ.get('HOSTNAME') or '')
+                my_nets = list((me.attrs.get('NetworkSettings', {}).get('Networks') or {}).keys())
+                osrm_nets = (osrm_c.attrs.get('NetworkSettings', {}).get('Networks') or {}).keys()
+                if my_nets and not any(n in osrm_nets for n in my_nets):
+                    client.networks.get(my_nets[0]).connect(osrm_c)
+                url = f'http://{osrm_c.name}:5000'
+        except Exception:
+            pass
+
+    _osrm_base_url_cache[profile] = (url, time.time())
+    return url
+
+def _maxspeed_entry(kmh, unlimited, raw):
+    if unlimited:
+        return {'none': True, 'raw': raw}
+    if kmh is None:
+        # OSM zone code such as `DE:urban` / `US:residential` -> report the tag, no invented number.
+        if raw and ':' in raw:
+            return {'implicit': True, 'raw': raw}
+        return {'unknown': True, 'raw': raw}
+    return {'speed_kmh': round(kmh, 1), 'speed_mph': round(kmh / MPH_TO_KMH, 1), 'raw': raw}
+
+def _max_of_entries(entries):
+    best = None
+    for e in entries:
+        if e.get('none'):
+            return {'none': True, 'raw': e.get('raw', 'none')}
+        if 'speed_kmh' in e and (best is None or e['speed_kmh'] > best['speed_kmh']):
+            best = e
+    return dict(best) if best else None
+
+def enrich_osrm_with_maxspeed(data: dict, profile: str, keep_nodes: bool) -> dict:
+    """Adds `annotation.maxspeed` (per segment), `leg.max_speed` and `route.max_speed` to route/match/trip responses."""
+    import sqlite3
+    routes = (data.get('routes') or []) + (data.get('matchings') or []) + (data.get('trips') or [])
+    if not routes:
+        return data
+
+    db_path = get_maxspeed_db_path(profile)
+    conn = None
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        except Exception:
+            conn = None
+    if conn is None:
+        data['maxspeed_warning'] = f'Maxspeed index for {profile} not found. Re-deploy or run "Update States" for the {profile} engine to build it.'
+
+    row_cache = {}
+    try:
+        for route in routes:
+            route_entries = []
+            for leg in route.get('legs') or []:
+                annotation = leg.get('annotation')
+                nodes = (annotation or {}).get('nodes') or []
+                leg_entries = []
+                for i in range(len(nodes) - 1):
+                    key = (nodes[i], nodes[i + 1])
+                    entry = row_cache.get(key)
+                    if entry is None:
+                        row = None
+                        if conn is not None:
+                            row = conn.execute(
+                                'SELECT v.kmh, v.is_unlimited, v.raw FROM seg s JOIN vals v ON v.id = s.v WHERE s.a = ? AND s.b = ? LIMIT 1',
+                                key
+                            ).fetchone()
+                        entry = _maxspeed_entry(row[0], bool(row[1]), row[2]) if row else {'unknown': True}
+                        row_cache[key] = entry
+                    leg_entries.append(entry)
+                if annotation is not None:
+                    annotation['maxspeed'] = leg_entries
+                    if not keep_nodes:
+                        annotation.pop('nodes', None)
+                leg['max_speed'] = _max_of_entries(leg_entries)
+                route_entries.extend(leg_entries)
+            route['max_speed'] = _max_of_entries(route_entries)
+    finally:
+        if conn is not None:
+            conn.close()
+    return data
+
+@app.get('/osrm/{profile}/{service}/v1/{osrm_profile}/{coordinates:path}')
+def osrm_proxy(profile: str, service: str, osrm_profile: str, coordinates: str, request: Request):
+    """Proxies an OSRM request to the car/foot engine and adds OSM maxspeed data to route/match/trip responses."""
+    import urllib.request
+    import urllib.error
+    from urllib.parse import unquote
+
+    if profile not in ('car', 'foot'):
+        return JSONResponse(status_code=400, content={'code': 'InvalidProfile', 'message': "Profile must be 'car' or 'foot'."})
+
+    enrich = service in ('route', 'match', 'trip')
+    parts = [p for p in (request.url.query or '').split('&') if p]
+    keep_nodes = True
+    if enrich:
+        idx = next((i for i, p in enumerate(parts) if p.split('=', 1)[0] == 'annotations'), None)
+        if idx is None:
+            parts.append('annotations=nodes')
+            keep_nodes = False
+        else:
+            value = unquote(parts[idx].split('=', 1)[1]) if '=' in parts[idx] else ''
+            if value in ('', 'false'):
+                parts[idx] = 'annotations=nodes'
+                keep_nodes = False
+            elif value != 'true':
+                values = [v for v in value.split(',') if v]
+                if 'nodes' not in values:
+                    parts[idx] = 'annotations=' + ','.join(values + ['nodes'])
+                    keep_nodes = False
+
+    path = f'/{service}/v1/{osrm_profile}/{coordinates}'
+    query = '&'.join(parts)
+    # Internal engine call: never route through HTTP(S) proxies configured on the host.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def fetch(base_url):
+        url = f'{base_url}{path}' + (f'?{query}' if query else '')
+        try:
+            with opener.open(url, timeout=60) as resp:
+                return resp.status, resp.headers.get('Content-Type', 'application/json'), resp.read()
+        except urllib.error.HTTPError as he:
+            return he.code, he.headers.get('Content-Type', 'application/json'), he.read()
+
+    try:
+        status, content_type, body = fetch(get_osrm_base_url(profile))
+    except Exception:
+        try:
+            status, content_type, body = fetch(get_osrm_base_url(profile, refresh=True))
+        except Exception as e:
+            return JSONResponse(status_code=502, content={'code': 'EngineUnavailable', 'message': f'OSRM {profile} engine is not reachable: {e}'})
+
+    if not enrich or 'json' not in (content_type or ''):
+        return Response(content=body, status_code=status, media_type=content_type)
+
+    try:
+        data = json.loads(body)
+    except Exception:
+        return Response(content=body, status_code=status, media_type=content_type)
+
+    if status == 200 and data.get('code') == 'Ok':
+        try:
+            data = enrich_osrm_with_maxspeed(data, profile, keep_nodes)
+        except Exception as e:
+            data['maxspeed_warning'] = f'Failed to add maxspeed data: {e}'
+    return JSONResponse(status_code=status, content=data)
 
 
 
@@ -1314,6 +1670,7 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
             if has_speeds:
                 cust_cmd_car.extend(['--segment-speed-file', '/data/speeds.csv'])
 
+            build_maxspeed_index(client, data_dir, 'car')
             log_msg('Running OSRM Extract for CAR...')
             stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/car.lua', '/data/car.osm.pbf'], **get_docker_mounts())
             log_msg('Running OSRM Partition for CAR...')
@@ -1328,6 +1685,7 @@ def update_states(req: MergeRequest, background_tasks: BackgroundTasks):
             if has_speeds:
                 cust_cmd_foot.extend(['--segment-speed-file', '/data/speeds.csv'])
 
+            build_maxspeed_index(client, data_dir, 'foot')
             log_msg('Running OSRM Extract for FOOT...')
             stream_container_logs(client, 'osrm/osrm-backend', ['osrm-extract', '-p', '/opt/foot.lua', '/data/foot.osm.pbf'], **get_docker_mounts())
             log_msg('Running OSRM Partition for FOOT...')

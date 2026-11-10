@@ -239,6 +239,7 @@ On startup (`@app.on_event("startup")`):
 | `POST` | `/system/merge` | **Fresh Deployment:** Downloads OSM PBFs, merges via `osmium-tool`, compiles graphs (`extract`, `partition`, `customize`), backs up graphs, recreates containers. |
 | `POST` | `/system/update` | **Zero-Downtime Update:** Downloads new state PBFs, merges, compiles graphs, and hot-swaps active memory using `osrm-datastore` without restarting containers. |
 | `POST` | `/system/deploy` | Rebuilds and launches OSRM containers for given ports. |
+| `GET` | `/osrm/{car\|foot}/{service}/v1/{osrm_profile}/{coordinates}` | **OSRM proxy with OSM maxspeed.** Forwards any OSRM request (same query params) to the car/foot engine. For `route`/`match`/`trip` it adds `legs[].annotation.maxspeed` (per segment: `{speed_kmh, speed_mph, raw}`, `{none: true}` for OSM `maxspeed=none`, `{implicit: true, raw}` for zone codes like `DE:urban`, or `{unknown: true}` when untagged; all values come strictly from OSM `maxspeed` tags, no hardcoded speeds), `legs[].max_speed`, and `routes[].max_speed`. Via frontend: `/api/osrm/...`. |
 | `GET` | `/system/logs` | Reads `/data/deploy.log` line-by-line for live frontend build tracking. |
 | `POST` | `/system/bootstrap` | Checks dependencies, Docker connectivity, map files, and container states. |
 
@@ -405,6 +406,7 @@ The `./data` directory is mounted into Docker containers as `/data`. It contains
 | `{profile}.osm.pbf` | Ephemeral merged PBF files (`car.osm.pbf`, `foot.osm.pbf`, `nominatim.osm.pbf`, `pelias.osm.pbf`) used during graph/index build and automatically deleted after installation. |
 | `car.osrm*`, `foot.osrm*` | Compiled OSRM MLD graph data files (`.cells`, `.ebg`, `.enw`, `.fileIndex`, `.hs`, `.mldgr`, `.nodes`, `.properties`, `.ramIndex`, `.timestamp`). |
 | `backup_car/`, `backup_foot/` | Pristine copies of graph files kept to allow re-applying `speeds.csv` cleanly without `.osm.pbf` files. |
+| `car_maxspeed.sqlite`, `foot_maxspeed.sqlite` | Directed OSM node-pair → `maxspeed` lookup built from `{profile}.osm.pbf` (via `osmium tags-filter` + OPL export) before each OSRM extract; used by the `/osrm/...` proxy. |
 
 ---
 

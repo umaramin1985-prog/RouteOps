@@ -20,6 +20,7 @@ RouteOps is a powerful, full-stack transportation management system built around
 *   **Active Route Edits Management:** Monitor and manage thousands of hot-swapped road closures and speed adjustments in a dedicated, paginated grid with real-time search filtering.
 *   **Multi-Profile Routing:** Seamlessly switch between Car (driving) and Foot (walking) routing profiles.
 *   **Advanced Navigation & Debugging:** Avoid tolls, calculate alternative routes, view detailed turn-by-turn navigation instructions, and inspect raw, unformatted JSON API responses directly from the OSRM backend.
+*   **Road Max Speed in OSRM Responses:** Call `GET /api/osrm/{car|foot}/route/v1/{profile}/{coords}?...` (same parameters as OSRM) to get the normal OSRM response plus the legal OSM `maxspeed` per segment (`legs[].annotation.maxspeed`) and the highest limit per leg/route (`max_speed`, in km/h and mph). The lookup index is built automatically on each Car/Foot deployment or zero-downtime update.
 *   **Real-Time System Telemetry:** Monitor whole-server CPU, RAM, Disk I/O, and Network statistics directly from the dashboard using integrated metric streaming.
 *   **Beautiful UI:** A modern, glassy, fully responsive React interface built for command centers, structured across dedicated tabs (Engines Setup, Live Map, and Active Edits).
 

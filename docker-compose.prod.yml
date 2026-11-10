@@ -12,6 +12,8 @@ services:
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock # Need this to restart OSRM containers from backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Fallback route from backend to OSRM host ports (maxspeed proxy)
     restart: always
 
   frontend:
