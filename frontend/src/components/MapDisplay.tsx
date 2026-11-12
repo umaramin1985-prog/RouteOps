@@ -163,6 +163,22 @@ async function fetchActiveOverridesList(): Promise<any[]> {
   return Array.isArray(data) ? data : [];
 }
 
+function getRouteViaLabel(route: any, fallback = ''): string {
+  for (const leg of route?.legs || []) {
+    for (const s of leg?.steps || []) {
+      const nm = String(s?.name || '').trim();
+      if (nm && nm.length > 1 && nm.toLowerCase() !== 'unnamed') {
+        return nm;
+      }
+      const rf = String(s?.ref || '').trim();
+      if (rf) {
+        return rf;
+      }
+    }
+  }
+  return fallback;
+}
+
 function resolveRoadEditorState(
   primaryRoute: any,
   mergedNodes: number[],
@@ -183,8 +199,6 @@ function resolveRoadEditorState(
     baseMph = Math.max(0.1, Math.min(200, Number(osmMph.toFixed(1))));
   } else if (primaryRoute?.max_speed?.unlimited) {
     speedPlaceholder = 'None';
-  } else if (primaryRoute && 'max_speed' in primaryRoute && primaryRoute.max_speed === null) {
-    speedPlaceholder = 'N/A';
   }
 
   let forwardMph: number | '' = baseMph;
@@ -677,7 +691,7 @@ export default function MapDisplay({
         const altCoords: [number, number][] = r.geometry.coordinates.map((c: number[]) => [c[1], c[0]]);
         const distMiles = (r.distance / 1609.34).toFixed(1);
         const durationMins = Math.ceil(r.duration / 60);
-        const viaName = r.legs?.[0]?.steps?.find((s: any) => s.name && s.name.length > 2)?.name || 'Alternate';
+        const viaName = getRouteViaLabel(r, 'Alternate');
         return {
           coords: altCoords,
           distance: `${distMiles} mi`,
@@ -692,7 +706,7 @@ export default function MapDisplay({
 
     const distMiles = (primaryRoute.distance / 1609.34).toFixed(1);
     const durationMins = Math.ceil(primaryRoute.duration / 60);
-    const viaRoad = primaryRoute.legs?.[0]?.steps?.find((s: any) => s.name && s.name.length > 2)?.name || 'Fastest Route';
+    const viaRoad = getRouteViaLabel(primaryRoute, 'Fastest Route');
 
     setMainRouteInfo({
       distance: `${distMiles} mi`,
@@ -966,7 +980,25 @@ export default function MapDisplay({
 
   // Road Editor submission
   const applyRoadEdit = async () => {
-    if (routeNodes.length < 2) {
+    let effectiveNodes = routeNodes;
+    if (effectiveNodes.length < 2 && startPoint) {
+      try {
+        const port = dockerStatus?.car_port || 5001;
+        const nearRes = await fetch(
+          `http://${window.location.hostname}:${port}/nearest/v1/driving/${startPoint.lng},${startPoint.lat}?number=1`
+        );
+        const nearData = await nearRes.json();
+        const candNodes = (nearData?.waypoints?.[0]?.nodes || []).filter(
+          (n: any) => typeof n === 'number' && n > 0
+        );
+        if (candNodes.length >= 2) {
+          effectiveNodes = candNodes.slice(0, 2);
+        }
+      } catch {
+        // Fall through to validation below
+      }
+    }
+    if (effectiveNodes.length < 2) {
       showToast('Select two points further apart on the road to apply an edit.');
       return;
     }
@@ -983,7 +1015,7 @@ export default function MapDisplay({
       return;
     }
 
-    const from_node = routeNodes.join(',');
+    const from_node = effectiveNodes.join(',');
     const to_node = '';
     const editLat = routeCoordinates[0][0];
     const editLng = routeCoordinates[0][1];
@@ -1022,7 +1054,7 @@ export default function MapDisplay({
         city_name: cityName
       });
       edits.push({
-        from_node: [...routeNodes].reverse().join(','),
+        from_node: [...effectiveNodes].reverse().join(','),
         to_node: '',
         speed_kmh: isBackClosing ? 0 : backwardKmh,
         is_closed: isBackClosing,
@@ -1719,7 +1751,7 @@ export default function MapDisplay({
                   const isSelected = idx === selectedRouteIndex;
                   const distStr = `${(r.distance / 1609.34).toFixed(1)} mi`;
                   const durStr = `${Math.ceil(r.duration / 60)} min`;
-                  const viaStr = r.legs?.[0]?.steps?.find((s: any) => s.name && s.name.length > 2)?.name || (idx === 0 ? 'Fastest Route' : 'Alternate');
+                  const viaStr = getRouteViaLabel(r, '');
                   const labelPrefix = stops.length > 0
                     ? `${stops.length + 1} legs route`
                     : idx === 0
@@ -1743,7 +1775,7 @@ export default function MapDisplay({
                             </span>
                           </div>
                           <div style={{ fontSize: isSelected ? '12px' : '11px', color: isSelected ? 'var(--gmaps-text)' : 'var(--gmaps-subtext)', marginTop: isSelected ? '2px' : '1px', fontWeight: isSelected ? 500 : 400 }}>
-                            {labelPrefix} &bull; via {viaStr}
+                            {viaStr ? <>{labelPrefix} &bull; via {viaStr}</> : labelPrefix}
                           </div>
                         </div>
 

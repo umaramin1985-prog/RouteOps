@@ -21,6 +21,61 @@ from urllib.parse import unquote
 MPH_TO_KMH = 1.609344
 KNOTS_TO_KMH = 1.852
 
+# OSM road-type (`highway=*`) fallback speeds (MPH) used ONLY when a way has no explicit
+# OSM `maxspeed` tag and no active Road Editor override.
+HIGHWAY_DEFAULT_MPH = {
+    'motorway': 65.0,
+    'motorway_link': 35.0,
+    'trunk': 55.0,
+    'trunk_link': 35.0,
+    'primary': 45.0,
+    'primary_link': 30.0,
+    'secondary': 35.0,
+    'secondary_link': 30.0,
+    'tertiary': 30.0,
+    'tertiary_link': 25.0,
+    'unclassified': 25.0,
+    'residential': 25.0,
+    'living_street': 15.0,
+    'service': 15.0,
+    'busway': 35.0,
+    'road': 25.0,
+    'track': 15.0,
+    'cycleway': 15.0,
+}
+
+# Pedestrian-only OSM `highway=*` classes (KM/H) for walking paths/trails without `maxspeed`
+HIGHWAY_PEDESTRIAN_KMH = {
+    'footway': 5.0,
+    'pedestrian': 5.0,
+    'path': 5.0,
+    'steps': 5.0,
+    'corridor': 5.0,
+    'bridleway': 5.0,
+    'crossing': 5.0,
+    'elevator': 5.0,
+}
+
+NON_ROUTABLE_HIGHWAYS = {
+    'proposed',
+    'construction',
+    'abandoned',
+    'razed',
+    'disused',
+    'demolished',
+    'no',
+    'platform',
+    'rest_area',
+    'services',
+    'street_lamp',
+    'traffic_signals',
+    'stop',
+    'give_way',
+    'milestone',
+    'speed_camera',
+    'toll_gantry',
+}
+
 _HOP_BY_HOP_HEADERS = {
     'connection',
     'keep-alive',
@@ -70,6 +125,107 @@ def parse_maxspeed(raw):
             best_kph = kph
             best_mph = mph
     return best_kph, best_mph, unlimited
+
+
+def highway_default_maxspeed(highway_raw):
+    """Returns `(kph, mph, is_unlimited)` for an OSM `highway=*` road class when `maxspeed` is missing."""
+    if not highway_raw:
+        return None, None, False
+    hw = str(highway_raw).strip().lower()
+    if not hw or hw in NON_ROUTABLE_HIGHWAYS:
+        return None, None, False
+    if hw in HIGHWAY_DEFAULT_MPH:
+        mph = HIGHWAY_DEFAULT_MPH[hw]
+        return mph * MPH_TO_KMH, mph, False
+    if hw in HIGHWAY_PEDESTRIAN_KMH:
+        kph = HIGHWAY_PEDESTRIAN_KMH[hw]
+        return kph, kph / MPH_TO_KMH, False
+    if hw.endswith('_link'):
+        mph = 30.0
+        return mph * MPH_TO_KMH, mph, False
+    mph = 25.0
+    return mph * MPH_TO_KMH, mph, False
+
+
+def infer_step_fallback_speed(route: dict):
+    """Infers OSM road-type fallback `(kmh, mph, 0, raw, 1)` from OSRM step metadata when DB lacks an entry.
+
+    Uses only static road/step classification (`mode`, `maneuver`, `classes`, `ref`, `name`) — never `duration` —
+    so the result is invariant to pin spacing and `start == dropoff`. Returns None for non-road modes (e.g. ferry).
+    """
+    steps = []
+    for leg in route.get('legs') or []:
+        for s in leg.get('steps') or []:
+            mtype = ((s.get('maneuver') or {}).get('type') or '').lower()
+            if mtype != 'arrive':
+                steps.append(s)
+    if not steps:
+        for leg in route.get('legs') or []:
+            steps.extend(leg.get('steps') or [])
+    if not steps:
+        return None
+
+    modes = {(s.get('mode') or '').strip().lower() for s in steps if s.get('mode')}
+    if 'ferry' in modes or 'train' in modes:
+        return None
+    if modes and modes <= {'walking', 'pedestrian'}:
+        kph = 5.0
+        return (kph, kph / MPH_TO_KMH, 0, 'fallback:footway', 1)
+    if modes and modes <= {'cycling', 'pushing bike'}:
+        mph = 15.0
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:cycleway', 1)
+
+    classes = set()
+    maneuvers = set()
+    names = set()
+    refs = []
+    for s in steps:
+        mtype = ((s.get('maneuver') or {}).get('type') or '').strip().lower()
+        if mtype:
+            maneuvers.add(mtype)
+        nm = (s.get('name') or '').strip().lower()
+        if nm and nm != 'unnamed':
+            names.add(nm)
+        rf = (s.get('ref') or '').strip()
+        if rf:
+            for tok in re.split(r'[;/,]', rf):
+                if tok.strip():
+                    refs.append(tok.strip().upper())
+        for inter in s.get('intersections') or []:
+            for cls in inter.get('classes') or []:
+                classes.add(str(cls).strip().lower())
+
+    if maneuvers & {'on ramp', 'off ramp', 'ramp'}:
+        mph = HIGHWAY_DEFAULT_MPH['motorway_link']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:motorway_link', 1)
+
+    has_interstate_ref = any(re.match(r'^I[\s\-]?\d+', r) for r in refs)
+    if 'motorway' in classes or has_interstate_ref:
+        mph = HIGHWAY_DEFAULT_MPH['motorway'] if names else HIGHWAY_DEFAULT_MPH['motorway_link']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:motorway' if names else 'fallback:motorway_link', 1)
+
+    if any(re.match(r'^US[\s\-]?\d+', r) for r in refs):
+        mph = HIGHWAY_DEFAULT_MPH['primary'] if names else HIGHWAY_DEFAULT_MPH['trunk_link']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:primary', 1)
+
+    if refs:
+        mph = HIGHWAY_DEFAULT_MPH['secondary'] if names else HIGHWAY_DEFAULT_MPH['secondary_link']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:secondary', 1)
+
+    if any(w in n for n in names for w in ('freeway', 'expressway', 'parkway', 'turnpike', 'thruway')):
+        mph = HIGHWAY_DEFAULT_MPH['trunk']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:trunk', 1)
+
+    if any(w in n for n in names for w in ('highway', 'boulevard', 'blvd')):
+        mph = HIGHWAY_DEFAULT_MPH['secondary']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:secondary', 1)
+
+    if any(w in n for n in names for w in ('alley', 'driveway', 'service')):
+        mph = HIGHWAY_DEFAULT_MPH['service']
+        return (mph * MPH_TO_KMH, mph, 0, 'fallback:service', 1)
+
+    mph = HIGHWAY_DEFAULT_MPH['residential']
+    return (mph * MPH_TO_KMH, mph, 0, 'fallback:residential', 1)
 
 
 def _step_road_keys(step: dict) -> set:
@@ -171,13 +327,22 @@ def prepare_upstream_query(raw_query: str, enrich: bool):
     return '&'.join(parts), keep_nodes, keep_had_annotations, keep_steps
 
 
-def _route_road_keys(route: dict) -> set:
-    """Union of normalized road names/refs across all non-arrive steps of a route."""
-    keys = set()
+def _route_road_names_and_refs(route: dict):
+    """Returns `(names_set, refs_set)` across all steps of a route."""
+    names = set()
+    refs = set()
     for leg in route.get('legs') or []:
         for s in leg.get('steps') or []:
-            keys |= _step_road_keys(s)
-    return keys
+            nm = (s.get('name') or '').strip().lower()
+            if nm and nm != 'unnamed':
+                names.add(nm)
+            rf = (s.get('ref') or '').strip().lower()
+            if rf:
+                for token in re.split(r'[;/,]', rf):
+                    tok = token.strip()
+                    if tok:
+                        refs.add(tok)
+    return names, refs
 
 
 def make_nearest_fetcher(fetch_json, osrm_profile: str):
@@ -243,8 +408,9 @@ def _build_override_maps(records: list):
         if a_id == b_id:
             return
         mph_val = kmh_val / MPH_TO_KMH
-        pairs[(a_id, b_id)] = (kmh_val, mph_val, 0, 'override')
-        touching_by_edge[(a_id, b_id)] = (kmh_val, mph_val, 0, 'override', road_name_norm, '')
+        # Tier 3 = active Road Editor override (highest priority)
+        pairs[(a_id, b_id)] = (kmh_val, mph_val, 0, 'override', 3)
+        touching_by_edge[(a_id, b_id)] = (kmh_val, mph_val, 0, 'override', 3, road_name_norm, '')
 
     for rec in records:
         if bool(rec.get('is_closed')):
@@ -372,15 +538,18 @@ def enrich_osrm_response(
 
     row_cache = {}
     has_names = False
+    has_fallback_col = False
     has_seg_b = False
     if conn is not None:
         try:
             cols = {r[1] for r in conn.execute('PRAGMA table_info(vals)').fetchall()}
             has_names = {'name', 'ref'}.issubset(cols)
+            has_fallback_col = 'is_fallback' in cols
             idx_names = {r[1] for r in conn.execute('PRAGMA index_list(seg)').fetchall()}
             has_seg_b = 'seg_b' in idx_names
         except Exception:
             has_names = False
+            has_fallback_col = False
             has_seg_b = False
 
     def lookup(a, b):
@@ -388,80 +557,118 @@ def enrich_osrm_response(
             return None
         key = (a, b)
         if key not in row_cache:
-            row_cache[key] = conn.execute(
-                'SELECT v.kmh, v.mph, v.is_unlimited, v.raw '
-                'FROM seg s JOIN vals v ON v.id = s.v '
-                'WHERE s.a = ? AND s.b = ? LIMIT 1',
-                key,
-            ).fetchone()
+            if has_fallback_col:
+                r = conn.execute(
+                    'SELECT v.kmh, v.mph, v.is_unlimited, v.raw, v.is_fallback '
+                    'FROM seg s JOIN vals v ON v.id = s.v '
+                    'WHERE s.a = ? AND s.b = ? '
+                    'ORDER BY v.is_fallback ASC, v.kmh DESC LIMIT 1',
+                    key,
+                ).fetchone()
+                row_cache[key] = (r[0], r[1], r[2], r[3], 1 if r[4] else 2) if r else None
+            else:
+                r = conn.execute(
+                    'SELECT v.kmh, v.mph, v.is_unlimited, v.raw '
+                    'FROM seg s JOIN vals v ON v.id = s.v '
+                    'WHERE s.a = ? AND s.b = ? LIMIT 1',
+                    key,
+                ).fetchone()
+                row_cache[key] = (r[0], r[1], r[2], r[3], 2) if r else None
         return row_cache[key]
 
-    def _row_matches_road(name, ref, match_keys):
-        if name and name.strip().lower() in match_keys:
-            return True
-        for token in re.split(r'[;/,]', ref or ''):
-            if token.strip().lower() and token.strip().lower() in match_keys:
+    def _ref_matches(ref_val: str, target_keys: set) -> bool:
+        for token in re.split(r'[;/,]', ref_val or ''):
+            tok = token.strip().lower()
+            if tok and tok in target_keys:
                 return True
         return False
 
-    def _filter_touching_rows(rows, match_keys, named_schema: bool):
+    def _filter_touching_rows(rows, route_names: set, route_refs: set, named_schema: bool):
         if not rows:
             return []
-        if named_schema and match_keys:
-            named = [r for r in rows if _row_matches_road(r[4], r[5], match_keys)]
-            if named:
-                return [r[:4] for r in named]
-            # Intersection node shared with differently named roads only -> never borrow their speed.
-            rows = [r for r in rows if not (r[4] or r[5])]
-            if not rows:
-                return []
-        # Without names, only accept an unambiguous result (all touching segments share the same limit).
-        distinct = {(r[0], r[1], r[2]) for r in rows}
-        return [rows[0][:4]] if len(distinct) == 1 else []
+        if named_schema:
+            all_keys = route_names | route_refs
+            if route_names:
+                by_name = [r for r in rows if (r[5] or '').strip().lower() in route_names]
+                if by_name:
+                    return [r[:5] for r in by_name]
+                by_any = [
+                    r for r in rows
+                    if (r[5] or '').strip().lower() in all_keys or _ref_matches(r[6], all_keys)
+                ]
+                return [r[:5] for r in by_any] if by_any else []
+            if route_refs:
+                unnamed_ref = [
+                    r for r in rows
+                    if not (r[5] or '').strip() and _ref_matches(r[6], route_refs)
+                ]
+                if unnamed_ref:
+                    return [r[:5] for r in unnamed_ref]
+                any_ref = [
+                    r for r in rows
+                    if _ref_matches(r[6], route_refs) or (r[5] or '').strip().lower() in route_refs
+                ]
+                return [r[:5] for r in any_ref] if any_ref else []
+            unnamed = [r for r in rows if not ((r[5] or '').strip() or (r[6] or '').strip())]
+            return [r[:5] for r in unnamed] if unnamed else []
 
-    def lookup_override_touching(nodes, match_keys):
+        distinct = {(r[0], r[1], r[2]) for r in rows}
+        return [rows[0][:5]] if len(distinct) == 1 else []
+
+    def lookup_override_touching(nodes, route_names: set, route_refs: set):
         if not ov_touching:
             return []
         rows = []
         for n in nodes:
             rows.extend(ov_touching.get(n) or [])
-        return _filter_touching_rows(rows, match_keys, named_schema=True)
+        return _filter_touching_rows(rows, route_names, route_refs, named_schema=True)
 
-    def lookup_touching(nodes, match_keys):
+    def lookup_touching(nodes, route_names: set, route_refs: set):
         """Rows for OSM segments touching `nodes`, restricted to the route's road.
 
         Used when `/nearest` only yields one node (one-way roads) or the node pair is not adjacent.
         """
         if conn is None:
             return []
-        cols = 'v.kmh, v.mph, v.is_unlimited, v.raw' + (', v.name, v.ref' if has_names else '')
+        tier_expr = 'CASE WHEN v.is_fallback != 0 THEN 1 ELSE 2 END' if has_fallback_col else '2'
+        name_expr = 'v.name, v.ref' if has_names else "'' AS name, '' AS ref"
+        sql_cols = f'v.kmh, v.mph, v.is_unlimited, v.raw, {tier_expr}, {name_expr}'
         rows = []
         for n in nodes:
             rows.extend(conn.execute(
-                f'SELECT {cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.a = ?', (n,)
+                f'SELECT {sql_cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.a = ?', (n,)
             ).fetchall())
             if has_seg_b:
                 rows.extend(conn.execute(
-                    f'SELECT {cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.b = ?', (n,)
+                    f'SELECT {sql_cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.b = ?', (n,)
                 ).fetchall())
-        return _filter_touching_rows(rows, match_keys, named_schema=has_names)
+        return _filter_touching_rows(rows, route_names, route_refs, named_schema=has_names)
 
     try:
         for route in routes:
             # Avoid re-processing if already enriched upstream
             if 'max_speed' not in route and is_same_road_route(route):
-                state = {'kph': None, 'mph': None, 'unlimited': False, 'found': False}
+                state = {'tier': 0, 'kph': None, 'mph': None, 'unlimited': False, 'found': False}
 
                 def accumulate(row):
                     if not row:
                         return
-                    kmh_val, mph_val, is_unlim, _raw = row
+                    kmh_val, mph_val, is_unlim, _raw, tier = row
+                    if tier < state['tier']:
+                        return
+                    if not is_unlim and (kmh_val is None or mph_val is None):
+                        return
+                    if tier > state['tier']:
+                        state['tier'] = tier
+                        state['kph'] = None
+                        state['mph'] = None
+                        state['unlimited'] = False
                     if is_unlim:
                         state['unlimited'] = True
                         state['found'] = True
-                    elif kmh_val is not None and mph_val is not None:
+                    else:
                         state['found'] = True
-                        if state['kph'] is None or kmh_val > state['kph']:
+                        if state['kph'] is None or float(kmh_val) > state['kph']:
                             state['kph'] = float(kmh_val)
                             state['mph'] = float(mph_val)
 
@@ -471,13 +678,13 @@ def enrich_osrm_response(
                         nodes = ((leg.get('annotation') or {}).get('nodes')) or []
                         for i in range(len(nodes) - 1):
                             a_n, b_n = nodes[i], nodes[i + 1]
-                            if a_n == b_n:
+                            if not isinstance(a_n, int) or not isinstance(b_n, int) or a_n <= 0 or b_n <= 0 or a_n == b_n:
                                 continue
                             accumulate(ov_pairs.get((a_n, b_n)) or lookup(a_n, b_n))
 
-                    # 2. Fallback: segment the waypoints snapped to (pickup == dropoff, very short routes)
+                    # 2. Snapped road segment via OSRM `/nearest` (pickup == dropoff / zero-length routes)
                     if not state['found'] and nearest_fetcher is not None:
-                        road_keys = _route_road_keys(route)
+                        base_names, base_refs = _route_road_names_and_refs(route)
                         for wp in data.get('waypoints') or []:
                             if state['found']:
                                 break
@@ -485,9 +692,11 @@ def enrich_osrm_response(
                             if not loc or len(loc) < 2:
                                 continue
                             wp_name = (wp.get('name') or '').strip().lower()
-                            match_keys = set(road_keys)
-                            if wp_name:
-                                match_keys.add(wp_name)
+                            route_names = set(base_names)
+                            if wp_name and wp_name != 'unnamed':
+                                route_names.add(wp_name)
+                            route_refs = set(base_refs)
+                            match_keys = route_names | route_refs
                             for idx, cand in enumerate(nearest_fetcher(loc[0], loc[1]) or []):
                                 cand_name = cand.get('name') or ''
                                 if match_keys:
@@ -507,11 +716,18 @@ def enrich_osrm_response(
                                     else:
                                         rows = [r for r in (lookup(a, b), lookup(b, a)) if r is not None]
                                 if not rows:
-                                    rows = lookup_override_touching(cand_nodes, match_keys) or lookup_touching(cand_nodes, match_keys)
+                                    rows = (
+                                        lookup_override_touching(cand_nodes, route_names, route_refs)
+                                        or lookup_touching(cand_nodes, route_names, route_refs)
+                                    )
                                 for row in rows:
                                     accumulate(row)
                                 if state['found']:
                                     break
+
+                # 3. Road-type safety fallback when OSM index has not yet backfilled `highway=*` rows
+                if not state['found']:
+                    accumulate(infer_step_fallback_speed(route))
 
                 if state['unlimited']:
                     route['max_speed'] = {'mph': None, 'kph': None, 'unlimited': True}

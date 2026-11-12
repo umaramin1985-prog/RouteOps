@@ -20,6 +20,7 @@ if os.environ.get("PROCFS_PATH") and os.path.isdir(os.environ["PROCFS_PATH"]):
 from database import SessionLocal, RoadOverride, engine, Base, User
 from osrm_maxspeed_proxy import (
     _open_sqlite_ro,
+    highway_default_maxspeed,
     parse_maxspeed,
     prepare_upstream_query,
     enrich_osrm_response,
@@ -973,14 +974,14 @@ def maxspeed_db_has_mph_schema(db_path: str) -> bool:
         return False
 
 def maxspeed_db_is_current(db_path: str) -> bool:
-    """True if the index has mph AND per-road name/ref (needed to resolve one-way snapped points)."""
+    """True if the index has mph, per-road name/ref, and highway road-type fallback (`is_fallback`)."""
     if not maxspeed_db_has_mph_schema(db_path):
         return False
     try:
         conn = _open_sqlite_ro(db_path)
         try:
             cols = {row[1] for row in conn.execute('PRAGMA table_info(vals)').fetchall()}
-            return {'name', 'ref'}.issubset(cols)
+            return {'name', 'ref', 'is_fallback'}.issubset(cols)
         finally:
             conn.close()
     except Exception:
@@ -1078,12 +1079,13 @@ def build_maxspeed_index(client, data_dir: str, profile: str, pbf_filename: str 
     tmp_db_path = db_path + '.tmp'
 
     try:
-        emit(f'[MAXSPEED] Building maxspeed index for {profile.upper()} (filtering maxspeed-tagged ways)...')
+        emit(f'[MAXSPEED] Building maxspeed index for {profile.upper()} (filtering highway & maxspeed ways)...')
         ok = stream_container_logs(
             client, 'stefda/osmium-tool',
             ['osmium', 'tags-filter', f'/data/{pbf_filename}',
-             'w/maxspeed', 'w/maxspeed:forward', 'w/maxspeed:backward',
+             'w/highway', 'w/maxspeed', 'w/maxspeed:forward', 'w/maxspeed:backward',
              'w/maxspeed:lanes', 'w/maxspeed:lanes:forward', 'w/maxspeed:lanes:backward',
+             'w/maxspeed:advisory', 'w/maxspeed:advisory:forward', 'w/maxspeed:advisory:backward',
              '-R', '-o', f'/data/{filtered_name}', '-O'],
             quiet=quiet,
             **get_docker_mounts()
@@ -1107,37 +1109,52 @@ def build_maxspeed_index(client, data_dir: str, profile: str, pbf_filename: str 
         conn = sqlite3.connect(tmp_db_path)
         conn.execute('PRAGMA journal_mode=OFF')
         conn.execute('PRAGMA synchronous=OFF')
-        conn.execute('CREATE TABLE vals (id INTEGER PRIMARY KEY, kmh REAL, mph REAL, is_unlimited INTEGER NOT NULL DEFAULT 0, raw TEXT NOT NULL, name TEXT NOT NULL DEFAULT \'\', ref TEXT NOT NULL DEFAULT \'\')')
-        conn.execute('CREATE UNIQUE INDEX vals_key ON vals (raw, name, ref)')
+        conn.execute(
+            "CREATE TABLE vals (id INTEGER PRIMARY KEY, kmh REAL, mph REAL, is_unlimited INTEGER NOT NULL DEFAULT 0, "
+            "raw TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', ref TEXT NOT NULL DEFAULT '', "
+            "is_fallback INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute('CREATE UNIQUE INDEX vals_key ON vals (raw, name, ref, is_fallback)')
         conn.execute('CREATE TABLE seg (a INTEGER NOT NULL, b INTEGER NOT NULL, v INTEGER NOT NULL)')
 
         # Bounded in-memory cache; the UNIQUE index dedupes the rest (keeps planet builds memory-safe).
         val_cache = {}
         next_val_id = [0]
-        def get_val_id(raw_val, way_name='', way_ref=''):
-            if raw_val is None:
-                return None
-            raw_val = raw_val.strip()
-            if not raw_val:
-                return None
-            key = (raw_val, way_name, way_ref)
+
+        def upsert_val_row(raw_key: str, kph, mph, unlimited: bool, way_name: str, way_ref: str, is_fb: int):
+            key = (raw_key, way_name, way_ref, is_fb)
             vid = val_cache.get(key)
             if vid is None:
-                row = conn.execute('SELECT id FROM vals WHERE raw = ? AND name = ? AND ref = ?', key).fetchone()
+                row = conn.execute(
+                    'SELECT id FROM vals WHERE raw = ? AND name = ? AND ref = ? AND is_fallback = ?',
+                    key,
+                ).fetchone()
                 if row:
                     vid = row[0]
                 else:
-                    kph, mph, unlimited = parse_maxspeed(raw_val)
                     next_val_id[0] += 1
                     vid = next_val_id[0]
                     conn.execute(
-                        'INSERT INTO vals (id, kmh, mph, is_unlimited, raw, name, ref) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                        (vid, kph, mph, 1 if unlimited else 0, raw_val, way_name, way_ref)
+                        'INSERT INTO vals (id, kmh, mph, is_unlimited, raw, name, ref, is_fallback) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                        (vid, kph, mph, 1 if unlimited else 0, raw_key, way_name, way_ref, is_fb),
                     )
                 if len(val_cache) >= 500000:
                     val_cache.clear()
                 val_cache[key] = vid
             return vid
+
+        def get_val_id(raw_val, hw_tag='', way_name='', way_ref=''):
+            if raw_val is not None:
+                cleaned = raw_val.strip()
+                if cleaned:
+                    kph, mph, unlimited = parse_maxspeed(cleaned)
+                    if unlimited or (kph is not None and mph is not None):
+                        return upsert_val_row(cleaned, kph, mph, unlimited, way_name, way_ref, 0)
+            if hw_tag:
+                fb_kph, fb_mph, fb_unlim = highway_default_maxspeed(hw_tag)
+                if fb_unlim or (fb_kph is not None and fb_mph is not None):
+                    return upsert_val_row(f'highway:{hw_tag}', fb_kph, fb_mph, fb_unlim, way_name, way_ref, 1)
+            return None
 
         batch = []
         way_count = 0
@@ -1162,13 +1179,24 @@ def build_maxspeed_index(client, data_dir: str, profile: str, pbf_filename: str 
                         k, v = kv.split('=', 1)
                         tags[_opl_unescape(k)] = _opl_unescape(v)
 
-                base_raw = tags.get('maxspeed') or tags.get('maxspeed:lanes')
-                fwd_raw = tags.get('maxspeed:forward') or tags.get('maxspeed:lanes:forward') or base_raw
-                bwd_raw = tags.get('maxspeed:backward') or tags.get('maxspeed:lanes:backward') or base_raw
+                hw_tag = (tags.get('highway') or '').strip().lower()
+                base_raw = tags.get('maxspeed') or tags.get('maxspeed:lanes') or tags.get('maxspeed:advisory')
+                fwd_raw = (
+                    tags.get('maxspeed:forward')
+                    or tags.get('maxspeed:lanes:forward')
+                    or tags.get('maxspeed:advisory:forward')
+                    or base_raw
+                )
+                bwd_raw = (
+                    tags.get('maxspeed:backward')
+                    or tags.get('maxspeed:lanes:backward')
+                    or tags.get('maxspeed:advisory:backward')
+                    or base_raw
+                )
                 way_name = (tags.get('name') or '').strip().lower()
                 way_ref = (tags.get('ref') or '').strip().lower()
-                fwd_id = get_val_id(fwd_raw, way_name, way_ref)
-                bwd_id = get_val_id(bwd_raw, way_name, way_ref)
+                fwd_id = get_val_id(fwd_raw, hw_tag, way_name, way_ref)
+                bwd_id = get_val_id(bwd_raw, hw_tag, way_name, way_ref)
                 if fwd_id is None and bwd_id is None:
                     continue
 
@@ -1477,10 +1505,10 @@ def startup_maxspeed_maintenance():
 
             # An existing (mph-capable) index already serves speeds; only re-download huge extracts on the next deployment.
             if maxspeed_db_has_mph_schema(db_path) and any(r == 'planet' or r in TOP_LEVEL_GEOFABRIK_REGIONS for r in regions):
-                print(f'[MAXSPEED-BACKFILL] {profile}_maxspeed.sqlite lacks road names; it will be rebuilt on the next deployment (regions too large for background refresh).', flush=True)
+                print(f'[MAXSPEED-BACKFILL] {profile}_maxspeed.sqlite lacks road names or highway fallbacks; it will be rebuilt on the next deployment (regions too large for background refresh).', flush=True)
                 continue
 
-            print(f'[MAXSPEED-BACKFILL] Building {profile}_maxspeed.sqlite (with OSM road names) from regions: {regions}', flush=True)
+            print(f'[MAXSPEED-BACKFILL] Building {profile}_maxspeed.sqlite (with OSM road names & highway fallbacks) from regions: {regions}', flush=True)
             region_files = []
             download_failed = False
             for region_id in regions:
