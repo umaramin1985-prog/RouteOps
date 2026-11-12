@@ -19,6 +19,7 @@ if os.environ.get("PROCFS_PATH") and os.path.isdir(os.environ["PROCFS_PATH"]):
 # Local imports
 from database import SessionLocal, RoadOverride, engine, Base, User
 from osrm_maxspeed_proxy import (
+    _open_sqlite_ro,
     parse_maxspeed,
     prepare_upstream_query,
     enrich_osrm_response,
@@ -190,6 +191,7 @@ def on_startup():
     db.close()
     cleanup_raw_state_pbfs(get_data_dir())
     sync_osrm_proxy_script(get_data_dir())
+    export_speed_overrides_json(get_data_dir())
     log_msg("[SYSTEM] Listening for deployment events...")
     threading.Thread(target=startup_maxspeed_maintenance, daemon=True).start()
 
@@ -227,7 +229,7 @@ def read_root():
 
 @app.get("/overrides")
 def get_overrides(db: Session = Depends(get_db)):
-    return db.query(RoadOverride).all()
+    return db.query(RoadOverride).order_by(RoadOverride.id.asc()).all()
 
 @app.post("/overrides")
 def create_override(override: OverrideRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -237,6 +239,7 @@ def create_override(override: OverrideRequest, background_tasks: BackgroundTasks
     db.add(db_override)
     db.commit()
     db.refresh(db_override)
+    export_speed_overrides_json(get_data_dir(), db.query(RoadOverride).order_by(RoadOverride.id.asc()).all())
     
     # Trigger rebuild in background
     background_tasks.add_task(rebuild_osrm_data)
@@ -256,6 +259,7 @@ def create_overrides_bulk(overrides: List[OverrideRequest], background_tasks: Ba
     db.commit()
     for db_override in db_overrides:
         db.refresh(db_override)
+    export_speed_overrides_json(get_data_dir(), db.query(RoadOverride).order_by(RoadOverride.id.asc()).all())
         
     background_tasks.add_task(rebuild_osrm_data)
     return {"status": "success", "message": f"{len(overrides)} overrides saved and OSRM rebuild triggered."}
@@ -266,6 +270,7 @@ def delete_override(override_id: int, background_tasks: BackgroundTasks, db: Ses
     if ov:
         db.delete(ov)
         db.commit()
+        export_speed_overrides_json(get_data_dir(), db.query(RoadOverride).order_by(RoadOverride.id.asc()).all())
         background_tasks.add_task(rebuild_osrm_data)
         return {"status": "success", "message": "Override removed."}
     return JSONResponse(status_code=404, content={"status": "error", "message": "Not found"})
@@ -372,7 +377,7 @@ def remove_all_containers():
         data_dir = get_data_dir()
         if os.path.exists(data_dir):
             for f in os.listdir(data_dir):
-                if f not in ('speeds.csv', 'ports.json', 'osrm_maxspeed_proxy.py') and not f.startswith('osrm_portal.db'): # keep overrides DB/CSV, port prefs & proxy script
+                if f not in ('speeds.csv', 'speed_overrides.json', 'ports.json', 'osrm_maxspeed_proxy.py') and not f.startswith('osrm_portal.db'): # keep overrides DB/CSV, port prefs & proxy script
                     p = os.path.join(data_dir, f)
                     if os.path.isfile(p):
                         os.remove(p)
@@ -729,10 +734,26 @@ class DeployRequest(BaseModel):
     car_port: int
     foot_port: int
 
+def _ensure_image_pulled(client, image: str, emit=None):
+    """Logs explicit progress when a Docker image must be pulled for the first time instead of appearing frozen."""
+    if not hasattr(client, 'images'):
+        return
+    if emit is None:
+        emit = log_msg
+    try:
+        client.images.get(image)
+    except Exception:
+        try:
+            emit(f'Pulling {image} (first-time download)...')
+            client.images.pull(image)
+        except Exception:
+            pass
+
 def stream_container_logs(client, image, command, quiet: bool = False, **kwargs):
     emit = (lambda *a: print(*a, flush=True)) if quiet else log_msg
     try:
         from docker.types import LogConfig
+        _ensure_image_pulled(client, image, emit=emit)
         kwargs['log_config'] = LogConfig(type=LogConfig.types.JSON)
         kwargs['detach'] = True
         container = client.containers.run(image, command, **kwargs)
@@ -939,11 +960,10 @@ def _opl_unescape(s: str) -> str:
     return re.sub(r'%([0-9a-fA-F]+)%', lambda m: chr(int(m.group(1), 16)), s)
 
 def maxspeed_db_has_mph_schema(db_path: str) -> bool:
-    import sqlite3
     if not db_path or not os.path.exists(db_path):
         return False
     try:
-        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        conn = _open_sqlite_ro(db_path)
         try:
             cols = {row[1] for row in conn.execute('PRAGMA table_info(vals)').fetchall()}
             return {'id', 'kmh', 'mph', 'is_unlimited', 'raw'}.issubset(cols)
@@ -954,11 +974,10 @@ def maxspeed_db_has_mph_schema(db_path: str) -> bool:
 
 def maxspeed_db_is_current(db_path: str) -> bool:
     """True if the index has mph AND per-road name/ref (needed to resolve one-way snapped points)."""
-    import sqlite3
     if not maxspeed_db_has_mph_schema(db_path):
         return False
     try:
-        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        conn = _open_sqlite_ro(db_path)
         try:
             cols = {row[1] for row in conn.execute('PRAGMA table_info(vals)').fetchall()}
             return {'name', 'ref'}.issubset(cols)
@@ -968,11 +987,26 @@ def maxspeed_db_is_current(db_path: str) -> bool:
         return False
 
 def upgrade_legacy_maxspeed_db_inplace(db_path: str) -> bool:
-    """Upgrades an existing `{profile}_maxspeed.sqlite` lacking the `mph` column in-place."""
+    """Upgrades an existing `{profile}_maxspeed.sqlite` schema/indexes (`mph` column, `seg_b` index) in-place."""
     import sqlite3
     if not db_path or not os.path.exists(db_path):
         return False
     if maxspeed_db_has_mph_schema(db_path):
+        try:
+            ro_conn = _open_sqlite_ro(db_path)
+            try:
+                idx_names = {row[1] for row in ro_conn.execute('PRAGMA index_list(seg)').fetchall()}
+            finally:
+                ro_conn.close()
+            if 'seg_b' not in idx_names:
+                w_conn = sqlite3.connect(db_path)
+                try:
+                    w_conn.execute('CREATE INDEX IF NOT EXISTS seg_b ON seg (b)')
+                    w_conn.commit()
+                finally:
+                    w_conn.close()
+        except Exception:
+            pass
         return True
     try:
         conn = sqlite3.connect(db_path)
@@ -989,6 +1023,7 @@ def upgrade_legacy_maxspeed_db_inplace(db_path: str) -> bool:
                 updates.append((kph, mph, 1 if unlim else 0, vid))
             if updates:
                 conn.executemany('UPDATE vals SET kmh = ?, mph = ?, is_unlimited = ? WHERE id = ?', updates)
+            conn.execute('CREATE INDEX IF NOT EXISTS seg_b ON seg (b)')
             conn.commit()
             print(f'[MAXSPEED] Upgraded schema in-place for {db_path} ({len(updates)} tag values).', flush=True)
             return True
@@ -1162,6 +1197,7 @@ def build_maxspeed_index(client, data_dir: str, profile: str, pbf_filename: str 
             batch.clear()
 
         conn.execute('CREATE INDEX seg_ab ON seg (a, b)')
+        conn.execute('CREATE INDEX seg_b ON seg (b)')
         conn.commit()
         conn.close()
         os.replace(tmp_db_path, db_path)
@@ -1602,7 +1638,7 @@ def process_deploy(car_port: int, foot_port: int, engines: dict = None, standalo
         has_car_pbf = os.path.exists(os.path.join(data_dir, 'car.osm.pbf'))
         has_foot_pbf = os.path.exists(os.path.join(data_dir, 'foot.osm.pbf'))
         for f in os.listdir(data_dir):
-            if f not in ['speeds.csv', 'active_states.json', 'pelias.json', 'ports.json', 'deploy.log', 'api_calls.json', 'osrm_maxspeed_proxy.py'] and not f.startswith('osrm_portal.db') and not f.endswith('.osm.pbf'):
+            if f not in ['speeds.csv', 'speed_overrides.json', 'active_states.json', 'pelias.json', 'ports.json', 'deploy.log', 'api_calls.json', 'osrm_maxspeed_proxy.py'] and not f.startswith('osrm_portal.db') and not f.endswith('.osm.pbf'):
                 if (f.startswith('car') or f.startswith('backup_car')) and (not engines.get("car", True) or not has_car_pbf):
                     continue
                 if (f.startswith('foot') or f.startswith('backup_foot')) and (not engines.get("foot", True) or not has_foot_pbf):
@@ -2341,6 +2377,37 @@ def download_region_files(regions: list, data_dir: str, force_download: bool) ->
             failed.append(region)
     return failed
 
+def export_speed_overrides_json(data_dir: str, overrides: list = None):
+    """Writes active road overrides to /data/speed_overrides.json so maxspeed proxies always match the Map."""
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        if overrides is None:
+            db_session = SessionLocal()
+            try:
+                overrides = db_session.query(RoadOverride).order_by(RoadOverride.id.asc()).all()
+            finally:
+                db_session.close()
+        json_path = os.path.join(data_dir, 'speed_overrides.json')
+        tmp_json = json_path + '.tmp'
+        payload = [
+            {
+                'id': ov.id,
+                'from_node': ov.from_node or '',
+                'to_node': ov.to_node or '',
+                'speed_kmh': float(ov.speed_kmh or 0),
+                'is_closed': bool(ov.is_closed),
+                'is_bidirectional': bool(ov.is_bidirectional),
+                'road_name': ov.road_name or '',
+            }
+            for ov in overrides
+        ]
+        with open(tmp_json, 'w', encoding='utf-8') as jf:
+            json.dump(payload, jf)
+        os.replace(tmp_json, json_path)
+    except Exception as e:
+        print(f'Notice: Could not export speed_overrides.json: {e}', flush=True)
+
+
 def export_speeds_csv(data_dir: str, quiet: bool = False) -> bool:
     """Writes road overrides from the DB to /data/speeds.csv. Returns True if the file has content."""
     emit = (lambda *a: print(*a, flush=True)) if quiet else log_msg
@@ -2348,9 +2415,10 @@ def export_speeds_csv(data_dir: str, quiet: bool = False) -> bool:
     try:
         db_session = SessionLocal()
         try:
-            overrides = db_session.query(RoadOverride).all()
+            overrides = db_session.query(RoadOverride).order_by(RoadOverride.id.asc()).all()
         finally:
             db_session.close()
+        export_speed_overrides_json(data_dir, overrides)
         tmp_path = csv_path + '.tmp'
         with open(tmp_path, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -2587,6 +2655,8 @@ def process_install_all(regions: list, car_port: int, foot_port: int, nominatim_
         if setup_pelias_schema(client, mounts):
             log_msg('--- Starting Pelias OSM Import ---')
             results['pelias'] = stream_container_logs(client, 'pelias/openstreetmap:master', ['npm', 'start'], environment={'PELIAS_CONFIG': '/data/pelias.json'}, network='routeops-geocoding_default', **mounts)
+            if results['pelias']:
+                _ensure_image_pulled(client, 'pelias/api:master')
     except Exception as e:
         log_msg(f'PELIAS install error: {e}')
     log_msg(f'PELIAS installation {"finished" if results["pelias"] else "FAILED"}.')
@@ -2622,12 +2692,15 @@ def process_install_all(regions: list, car_port: int, foot_port: int, nominatim_
         started.append(f'Foot :{foot_port}')
     if results['nominatim']:
         try:
+            log_msg(f'Starting Nominatim container on port {nominatim_port}...')
             run_nominatim_container(client, 'routeops-nominatim-1', nominatim_pg_dir, host_port=nominatim_port)
             started.append(f'Nominatim :{nominatim_port}')
         except Exception as e:
             log_msg(f'Failed to start Nominatim: {e}')
     if results['pelias']:
         try:
+            _ensure_image_pulled(client, 'pelias/api:master')
+            log_msg(f'Starting Pelias API container on port {pelias_port}...')
             client.containers.run('pelias/api:master', name='routeops-pelias-1', ports={'3100/tcp': pelias_port}, environment={'PELIAS_CONFIG': '/data/pelias.json'}, network='routeops-geocoding_default', log_config=_engine_log_config(), restart_policy={'Name': 'always'}, detach=True, **mounts)
             started.append(f'Pelias :{pelias_port}')
         except Exception as e:
@@ -2918,25 +2991,53 @@ def get_docker_detailed_stats(profile: str):
     if profile not in ('car', 'foot', 'nominatim', 'pelias'):
         return {'error': 'Invalid profile'}
     try:
+        import shutil
         import subprocess
         import json
         import docker
         client = docker.from_env()
-        c_name = None
+        target_c = None
         for c in client.containers.list(all=True):
             if c.status != 'running':
                 continue
             if profile == 'nominatim' and c.name in ('nominatim', 'routeops-nominatim-1'):
-                c_name = c.name
+                target_c = c
                 break
             if profile == 'pelias' and c.name in ('pelias_api', 'routeops-pelias-1'):
-                c_name = c.name
+                target_c = c
                 break
             if profile in ('car', 'foot') and f'osrm-{profile}' in c.name:
-                c_name = c.name
+                target_c = c
                 break
-        if not c_name: return {'error': 'Not running'}
-        
+        if not target_c:
+            return {'error': 'Not running'}
+
+        # Prefer native Docker SDK stats over /var/run/docker.sock (works even without the docker CLI binary).
+        if not shutil.which('docker'):
+            raw = target_c.stats(stream=False) or {}
+            cpu_delta = (raw.get('cpu_stats', {}).get('cpu_usage', {}).get('total_usage', 0)
+                         - raw.get('precpu_stats', {}).get('cpu_usage', {}).get('total_usage', 0))
+            sys_delta = (raw.get('cpu_stats', {}).get('system_cpu_usage', 0)
+                         - raw.get('precpu_stats', {}).get('system_cpu_usage', 0))
+            online_cpus = raw.get('cpu_stats', {}).get('online_cpus') or 1
+            cpu = (cpu_delta / sys_delta) * online_cpus * 100.0 if sys_delta > 0 and cpu_delta > 0 else 0.0
+            mem_usage = float(raw.get('memory_stats', {}).get('usage', 0) or 0)
+            mem_limit = float(raw.get('memory_stats', {}).get('limit', 0) or 0)
+            networks = raw.get('networks') or {}
+            net_in = sum(float(v.get('rx_bytes', 0) or 0) for v in networks.values())
+            net_out = sum(float(v.get('tx_bytes', 0) or 0) for v in networks.values())
+            blk_entries = (raw.get('blkio_stats', {}) or {}).get('io_service_bytes_recursive') or []
+            disk_io = sum(float(e.get('value', 0) or 0) for e in blk_entries if e.get('op') in ('Read', 'Write', 'read', 'write'))
+            return {
+                'cpu': round(cpu, 1),
+                'memory': mem_usage,
+                'memory_limit': mem_limit,
+                'net_in': net_in,
+                'net_out': net_out,
+                'disk_io': disk_io,
+            }
+
+        c_name = target_c.name
         proc = subprocess.run(['docker', 'stats', '--no-stream', '--format', 'json', c_name], capture_output=True, text=True)
         if proc.returncode != 0: return {'error': 'Stats failed'}
         
@@ -3090,8 +3191,77 @@ def bootstrap_system(background_tasks: BackgroundTasks):
 
 _SHELL_METACHARS = set(';&|`$<>\n\r\\')
 
+def _exec_docker_via_sdk(args: list) -> str:
+    """Fallback when the `docker` CLI binary is absent inside an un-rebuilt backend container."""
+    client = docker.from_env()
+    sub = args[1] if len(args) > 1 else 'ps'
+    rest = args[2:]
+
+    if sub in ('ps', 'container') and (sub == 'ps' or (rest and rest[0] in ('ls', 'list'))):
+        flags = rest if sub == 'ps' else rest[1:]
+        show_all = any(f in ('-a', '--all') for f in flags)
+        rows = [('NAMES', 'IMAGE', 'STATUS', 'PORTS')]
+        for c in client.containers.list(all=show_all):
+            tags = getattr(c.image, 'tags', None) or []
+            img = tags[0] if tags else (c.attrs.get('Config', {}) or {}).get('Image', '')
+            pb = (c.attrs.get('NetworkSettings', {}) or {}).get('Ports') or {}
+            port_parts = []
+            for cport, binds in pb.items():
+                if binds:
+                    for b in binds:
+                        port_parts.append(f"{b.get('HostIp', '0.0.0.0')}:{b.get('HostPort')}->{cport}")
+                else:
+                    port_parts.append(cport)
+            rows.append((c.name, str(img), c.status, ', '.join(port_parts)))
+        widths = [max(len(r[i]) for r in rows) for i in range(4)]
+        return '\n'.join('  '.join(r[i].ljust(widths[i]) for i in range(4)).rstrip() for r in rows)
+
+    if sub == 'images':
+        rows = [('REPOSITORY:TAG', 'ID', 'SIZE_MB')]
+        for img in client.images.list():
+            tag = (img.tags or ['<none>:<none>'])[0]
+            short_id = (img.short_id or '').replace('sha256:', '')
+            size_mb = f"{round((img.attrs.get('Size', 0) or 0) / (1024 * 1024), 1)}MB"
+            rows.append((tag, short_id, size_mb))
+        widths = [max(len(r[i]) for r in rows) for i in range(3)]
+        return '\n'.join('  '.join(r[i].ljust(widths[i]) for i in range(3)).rstrip() for r in rows)
+
+    if sub == 'logs' and rest:
+        tail = 100
+        target = rest[-1]
+        if '--tail' in rest:
+            idx = rest.index('--tail')
+            if idx + 1 < len(rest) and rest[idx + 1].isdigit():
+                tail = int(rest[idx + 1])
+        c = client.containers.get(target)
+        return (c.logs(tail=tail) or b'').decode('utf-8', errors='replace').strip()
+
+    if sub in ('start', 'stop', 'restart') and rest:
+        out = []
+        for name in rest:
+            if name.startswith('-'):
+                continue
+            c = client.containers.get(name)
+            getattr(c, sub)()
+            out.append(name)
+        return '\n'.join(out)
+
+    if sub == 'volume' and rest and rest[0] in ('ls', 'list'):
+        return '\n'.join(['VOLUME NAME'] + [v.name for v in client.volumes.list()])
+
+    if sub == 'network' and rest and rest[0] in ('ls', 'list'):
+        return '\n'.join(['NETWORK NAME'] + [n.name for n in client.networks.list()])
+
+    if sub in ('info', 'version'):
+        ver = client.version()
+        return json.dumps(ver, indent=2)
+
+    return f"Docker CLI binary not installed in backend container (supported via SDK without rebuild: ps, images, logs, start, stop, restart, volume ls, network ls, version; rebuild backend image for full '{' '.join(args)}' CLI)."
+
+
 @app.post('/system/exec')
 def execute_command(req: CommandRequest):
+    import shutil
     raw = (req.command or '').strip()
     log_msg(f"$ {raw}")
     # Only plain `docker ...` invocations: no shell, no chaining/redirection/substitution.
@@ -3107,11 +3277,16 @@ def execute_command(req: CommandRequest):
         log_msg("Error: Only 'docker' commands are allowed for security.")
         return {'status': 'error'}
     try:
-        result = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=120)
-        if result.stdout:
-            log_msg(result.stdout.strip())
-        if result.stderr:
-            log_msg(result.stderr.strip())
+        if shutil.which('docker'):
+            result = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=120)
+            if result.stdout:
+                log_msg(result.stdout.strip())
+            if result.stderr:
+                log_msg(result.stderr.strip())
+        else:
+            out = _exec_docker_via_sdk(args)
+            if out:
+                log_msg(out)
     except subprocess.TimeoutExpired:
         log_msg("Error: Command timed out after 120s.")
     except Exception as e:

@@ -1,8 +1,10 @@
 # RouteOps v2.4.0 🚗 🗺️
 
-RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)** and self-hosted **Pelias / Nominatim** geocoding engines. It provides a sleek, dark-mode web dashboard to deploy routing and geocoding engines for the **Entire Planet**, **Continents**, **World Countries**, or specific **US States** on-the-fly, calculate routes (Car & Foot), search addresses locally, and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
+RouteOps is a powerful, full-stack transportation management system built around the **Open Source Routing Machine (OSRM)** and self-hosted **Pelias / Nominatim** geocoding engines. It provides a sleek dark/light-mode web dashboard to deploy routing and geocoding engines for the **Entire Planet**, **Continents**, **World Countries**, or specific **US States** on-the-fly, calculate routes (Car & Foot), search addresses locally, and instantly apply dynamic road closures with **zero-downtime hot-swapping**.
 
 ## 🚀 What's New in v2.4.0
+*   **One-Click Install All Engines (Shared OSM Data & Deferred Startup):** Provision **Car**, **Foot**, **Nominatim**, and **Pelias** together from a single shared OSM download (`POST /api/system/install-all`). All four installations run sequentially using internal build/import helpers and only publish/start the live engine containers once every installation has completed.
+*   **Single-Road OSM `max_speed` (`mph` & `kph`) Enrichment:** Direct calls to OSRM Car (`:5001`) and Foot (`:5005`) `/route/v1/...` endpoints (plus `/api/osrm/...`) include `"max_speed": {"mph": <float>, "kph": <float>}` strictly from OpenStreetMap `maxspeed` tags whenever the route stays on a single road—including zero-length routes where pickup and dropoff are the same location.
 *   **Global Planet, Continents, Countries & US States Catalog:** Added full global coverage to the Engine Setup selector (`Entire Planet` from `planet.openstreetmap.org`, all 8 Continents, 190+ World Countries across Americas, Europe, Asia, Africa, and Oceania, and all 53 US States & Territories from Geofabrik) with category filter tabs and bounding-box map navigation.
 *   **Strictly Local Geocoding & Reverse Geocoding:** All place searches, autocomplete queries, map click lookups, waypoint dragging, and "What's here?" reverse geocoding on the Live Map are now served strictly and exclusively by installed local **Pelias** or **Nominatim** container instances. All external public third-party web APIs (Photon Komoot, OpenStreetMap public Nominatim, BigDataCloud) have been completely removed for 100% self-hosted privacy and air-gapped reliability.
 *   **Live Map Geocoder Indicator & Status Badge:** The Live Map search bar now features a real-time badge displaying the active local geocoding engine (`Pelias` or `Nominatim`) with live connectivity status (green online / red offline) and descriptive search placeholder hints.
@@ -21,7 +23,7 @@ RouteOps is a powerful, full-stack transportation management system built around
 *   **Active Route Edits Management:** Monitor and manage thousands of hot-swapped road closures and speed adjustments in a dedicated, paginated grid with real-time search filtering.
 *   **Multi-Profile Routing:** Seamlessly switch between Car (driving) and Foot (walking) routing profiles.
 *   **Advanced Navigation & Debugging:** Avoid tolls, calculate alternative routes, view detailed turn-by-turn navigation instructions, and inspect raw, unformatted JSON API responses directly from the OSRM backend.
-*   **Road Max Speed in OSRM Responses:** Direct calls to the Car (`:5001`) and Foot (`:5005`) OSRM `/route/v1/...` endpoints (as well as `GET /api/osrm/{car|foot}/route/v1/...`) automatically include `"max_speed": {"mph": <float>, "kph": <float>}` on each route in `routes[]` **only when the route stays on a single road** (`{"mph": null, "kph": null, "unlimited": true}` for OSM `maxspeed=none`, `null` if untagged in OSM, and omitted on multi-road routes). All speed limits come strictly from OpenStreetMap `maxspeed` tags indexed into SQLite during deployment or background startup backfill. Pickup and dropoff at the same location (zero-length route) also return the `max_speed` of the OSM road the point snaps to.
+*   **Road Max Speed in OSRM Responses:** Direct calls to the Car (`:5001`) and Foot (`:5005`) OSRM `/route/v1/...` endpoints (as well as `GET /api/osrm/{car|foot}/route/v1/...`) automatically include `"max_speed": {"mph": <float>, "kph": <float>}` on each route in `routes[]` **only when the route stays on a single road** (`{"mph": null, "kph": null, "unlimited": true}` for OSM `maxspeed=none`, `null` if untagged in OSM, and omitted on multi-road routes). Speed limits come strictly from OpenStreetMap `maxspeed` tags (with any active Road Editor speed override applied on top) so the Live Map Road Editor and OSRM API always match 1:1 — including when pickup and dropoff are at the exact same location (`0.0 mi`).
 *   **Real-Time System Telemetry:** Monitor whole-server CPU, RAM, Disk I/O, and Network statistics directly from the dashboard using integrated metric streaming.
 *   **Beautiful UI:** A modern, glassy, fully responsive React interface built for command centers, structured across dedicated tabs (Engines Setup, Live Map, and Active Edits).
 
@@ -53,7 +55,7 @@ RouteOps is a powerful, full-stack transportation management system built around
 To run this project, you must have the following installed on your machine:
 *   **Docker:** (Docker Desktop on Windows, or native Docker engine on Linux)
 *   **Python 3.10+**
-*   **Node.js (v16+)**
+*   **Node.js (v20.19+ or v22 LTS)**
 
 *(Note: Running this project natively on a Linux machine is highly recommended over Windows WSL2, as compiling OSRM graph data is extremely CPU and I/O intensive.)*
 
@@ -123,9 +125,10 @@ By default, the management portal is locked behind a login screen to prevent una
 
 ## 🕹️ Usage Guide
 
-1.  **Deploy / Update Engines:** Go to the **Engines Setup** tab on the top navigation bar. Select states from the list. You have two options:
-    - **Update States (Zero Downtime):** Compiles the new map data and swaps it into shared memory instantly without interrupting active traffic. Includes an automatic safeguard that will fall back to a fresh setup if your server lacks the RAM required to hold both maps simultaneously.
-    - **Destroy Existing Containers & Deploy Fresh Setup:** Completely stops routing services, wipes old data from RAM, and performs a clean installation from scratch (causes brief downtime).
-2.  **Calculate a Route:** Go to the **Live Map** tab. Click anywhere on the map to set a Start point, and click again to set a Destination. The route will be drawn instantly. You can click the **JSON** button in the route summary to view and copy the raw API request and response.
-3.  **Close a Road:** Once a route is drawn, you can click directly on the blue route line to adjust its speed limit or completely close the road. The change will instantly propagate to the routing engine.
-4.  **Manage Active Edits:** Navigate to the **Active Edits** tab to view a complete, paginated grid of all active road closures and speed adjustments. You can search by node ID or reason, and quickly remove any edits to instantly restore the original map state.
+1.  **Deploy / Update Engines:** Go to the **Engines Setup** tab on the top navigation bar:
+    - **Install All Engines:** Select regions once (Planet, Continents, Countries, or US States) and configure ports to build **Car**, **Foot**, **Nominatim**, and **Pelias** from a single shared OSM download. Containers start together only after all installations complete.
+    - **Update States (Zero Downtime):** Per-engine configuration that compiles new map data and swaps it into shared memory instantly without interrupting active traffic (with automatic fallback to fresh setup if available RAM is low).
+    - **Destroy Existing Containers & Deploy Fresh Setup:** Stops the selected engine's service, wipes old graph/index data, and performs a clean installation from scratch.
+2.  **Calculate a Route:** Go to the **Live Map** tab. Click on the map or search via your local Pelias/Nominatim geocoder to set an Origin, Destination, and up to 8 intermediate stops. Click the **JSON** button in the route summary to view and copy the raw API request and response.
+3.  **Adjust Speed or Close a Road:** Once a route is drawn, click or right-click on any segment along the route line (across single-leg or multi-stop routes) to set a custom speed limit (`1–200 MPH`, one-way or bidirectional) or close the road completely. Changes hot-swap into OSRM shared memory immediately without container restarts.
+4.  **Manage Active Edits:** Navigate to the **Active Edits** tab to view a paginated grid of all active road closures and speed adjustments, filter by region or search query, jump to the segment on the Live Map, or revert overrides.

@@ -150,7 +150,7 @@ function MapFitter({ bounds }: { bounds: L.LatLngBounds | null }) {
   const map = useMap();
   useEffect(() => {
     if (bounds) {
-      map.fitBounds(bounds, { padding: [60, 60] });
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17 });
     }
   }, [bounds, map]);
   return null;
@@ -161,6 +161,108 @@ async function fetchActiveOverridesList(): Promise<any[]> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
+}
+
+function resolveRoadEditorState(
+  primaryRoute: any,
+  mergedNodes: number[],
+  activeOverrides: any[],
+  roadNameLabel: string
+): {
+  forwardMph: number | '';
+  backwardMph: number | '';
+  forwardClosed: boolean;
+  backwardClosed: boolean;
+  speedPlaceholder: string;
+} {
+  let baseMph: number | '' = '';
+  let speedPlaceholder = '—';
+  const osmMph = primaryRoute?.max_speed?.mph;
+  if (typeof osmMph === 'number' && osmMph > 0) {
+    // Exact 1:1 parity with OSRM API `routes[0].max_speed.mph` (invariant to pin spacing or start == dropoff).
+    baseMph = Math.max(0.1, Math.min(200, Number(osmMph.toFixed(1))));
+  } else if (primaryRoute?.max_speed?.unlimited) {
+    speedPlaceholder = 'None';
+  } else if (primaryRoute && 'max_speed' in primaryRoute && primaryRoute.max_speed === null) {
+    speedPlaceholder = 'N/A';
+  }
+
+  let forwardMph: number | '' = baseMph;
+  let backwardMph: number | '' = baseMph;
+  let forwardClosed = false;
+  let backwardClosed = false;
+
+  if (activeOverrides.length > 0 && mergedNodes.length >= 1) {
+    const fwdPairs = new Set<string>();
+    const bwdPairs = new Set<string>();
+    for (let i = 0; i < mergedNodes.length - 1; i++) {
+      if (mergedNodes[i] !== mergedNodes[i + 1]) {
+        fwdPairs.add(`${mergedNodes[i]}->${mergedNodes[i + 1]}`);
+        bwdPairs.add(`${mergedNodes[i + 1]}->${mergedNodes[i]}`);
+      }
+    }
+    const singleNodeStr = fwdPairs.size === 0 ? String(mergedNodes[0]) : null;
+    const normRoad = (roadNameLabel || '').trim().toLowerCase();
+
+    for (const ov of activeOverrides) {
+      const pairs: string[] = [];
+      const nodeSet = new Set<string>();
+      const fromRaw = String(ov?.from_node || '').trim();
+      const toRaw = String(ov?.to_node || '').trim();
+      if (fromRaw.includes(',')) {
+        const ns = fromRaw.split(',').map((s) => s.trim()).filter(Boolean);
+        for (const n of ns) nodeSet.add(n);
+        for (let i = 0; i < ns.length - 1; i++) {
+          pairs.push(`${ns[i]}->${ns[i + 1]}`);
+          if (ov.is_bidirectional) {
+            pairs.push(`${ns[i + 1]}->${ns[i]}`);
+          }
+        }
+      } else if (fromRaw && toRaw) {
+        nodeSet.add(fromRaw);
+        nodeSet.add(toRaw);
+        pairs.push(`${fromRaw}->${toRaw}`);
+        if (ov.is_bidirectional) {
+          pairs.push(`${toRaw}->${fromRaw}`);
+        }
+      }
+
+      if (fwdPairs.size > 0) {
+        if (pairs.some((p) => fwdPairs.has(p))) {
+          forwardClosed = Boolean(ov.is_closed);
+          if (!ov.is_closed && Number(ov.speed_kmh) > 0) {
+            forwardMph = Math.max(0.1, Math.min(200, Number((Number(ov.speed_kmh) / 1.609344).toFixed(1))));
+          }
+        }
+        if (pairs.some((p) => bwdPairs.has(p))) {
+          backwardClosed = Boolean(ov.is_closed);
+          if (!ov.is_closed && Number(ov.speed_kmh) > 0) {
+            backwardMph = Math.max(0.1, Math.min(200, Number((Number(ov.speed_kmh) / 1.609344).toFixed(1))));
+          }
+        }
+      } else if (singleNodeStr && nodeSet.has(singleNodeStr)) {
+        const ovRoad = String(ov?.road_name || '').trim().toLowerCase();
+        if (!normRoad || !ovRoad || ovRoad === normRoad) {
+          const reasonLower = String(ov?.reason || '').toLowerCase();
+          const isBwdOnly = !ov.is_bidirectional && reasonLower.startsWith('[backward]');
+          if (!isBwdOnly) {
+            forwardClosed = Boolean(ov.is_closed);
+            if (!ov.is_closed && Number(ov.speed_kmh) > 0) {
+              forwardMph = Math.max(0.1, Math.min(200, Number((Number(ov.speed_kmh) / 1.609344).toFixed(1))));
+            }
+          }
+          if (ov.is_bidirectional || isBwdOnly) {
+            backwardClosed = Boolean(ov.is_closed);
+            if (!ov.is_closed && Number(ov.speed_kmh) > 0) {
+              backwardMph = Math.max(0.1, Math.min(200, Number((Number(ov.speed_kmh) / 1.609344).toFixed(1))));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { forwardMph, backwardMph, forwardClosed, backwardClosed, speedPlaceholder };
 }
 
 // ==========================================================================
@@ -260,10 +362,11 @@ export default function MapDisplay({
   const [isSameRoad, setIsSameRoad] = useState(true);
   const [roadName, setRoadName] = useState('');
   const [cityName, setCityName] = useState('');
-  const [newSpeed, setNewSpeed] = useState(30);
+  const [newSpeed, setNewSpeed] = useState<number | ''>('');
+  const [speedPlaceholder, setSpeedPlaceholder] = useState('N/A');
   const [isClosing, setIsClosing] = useState(false);
   const [isBidirectional, setIsBidirectional] = useState(true);
-  const [backSpeed, setBackSpeed] = useState(30);
+  const [backSpeed, setBackSpeed] = useState<number | ''>('');
   const [isBackClosing, setIsBackClosing] = useState(false);
   const [editReason, setEditReason] = useState('');
 
@@ -420,6 +523,9 @@ export default function MapDisplay({
   useEffect(() => {
     const handleEditRemoved = () => {
       void fetchOverrides();
+      setTimeout(() => {
+        void fetchOverrides();
+      }, 3000);
     };
     const handleMapGoto = (e: Event) => {
       const ov = (e as CustomEvent)?.detail;
@@ -454,7 +560,7 @@ export default function MapDisplay({
         if (targetLat !== null && targetLng !== null) {
           const speedLabel = ov.is_closed
             ? 'Road Closed'
-            : `${Math.round((ov.speed_kmh || 0) * 0.621371)} mph (${Math.round(ov.speed_kmh || 0)} km/h)`;
+            : `${Number((Number(ov.speed_kmh || 0) / 1.609344).toFixed(1))} mph (${Number(Number(ov.speed_kmh || 0).toFixed(1))} km/h)`;
           setActivePlace({
             title: ov.road_name || (ov.is_closed ? 'Road Closure' : 'Speed Override'),
             subtitle: [speedLabel, ov.city_name, ov.reason].filter(Boolean).join(' • '),
@@ -613,18 +719,15 @@ export default function MapDisplay({
         ? true
         : (roadNames.size === 1 || (roadNames.size === 0 && nonArriveSteps.length <= 1));
       setIsSameRoad(sameRoad);
-      if (roadNames.size > 0) {
-        setRoadName(Array.from(roadNames)[0] as string);
-      } else {
-        setRoadName('');
-      }
+      const resolvedRoadName = roadNames.size > 0 ? (Array.from(roadNames)[0] as string) : '';
+      setRoadName(resolvedRoadName);
 
       const mergedNodes: number[] = [];
       for (const leg of primaryRoute.legs) {
         const legNodes: number[] | undefined = leg?.annotation?.nodes;
         if (Array.isArray(legNodes)) {
           for (const n of legNodes) {
-            if (mergedNodes.length === 0 || mergedNodes[mergedNodes.length - 1] !== n) {
+            if (typeof n === 'number' && n > 0 && (mergedNodes.length === 0 || mergedNodes[mergedNodes.length - 1] !== n)) {
               mergedNodes.push(n);
             }
           }
@@ -632,14 +735,14 @@ export default function MapDisplay({
       }
       setRouteNodes(mergedNodes);
 
-      const firstSpeedMs = primaryRoute.legs[0]?.annotation?.speed?.[0];
-      if (typeof firstSpeedMs === 'number' && firstSpeedMs > 0) {
-        const speedMph = Math.max(1, Math.min(200, Math.round(firstSpeedMs * 2.23694) || 30));
-        setNewSpeed(speedMph);
-        setBackSpeed(speedMph);
-      }
+      const editorState = resolveRoadEditorState(primaryRoute, mergedNodes, activeOverrides, resolvedRoadName);
+      setNewSpeed(editorState.forwardMph);
+      setBackSpeed(editorState.backwardMph);
+      setSpeedPlaceholder(editorState.speedPlaceholder);
+      setIsClosing(editorState.forwardClosed);
+      setIsBackClosing(editorState.backwardClosed);
     }
-  }, [showAlternatives]);
+  }, [showAlternatives, activeOverrides]);
 
   const fetchRoute = useCallback(async (signal?: AbortSignal) => {
     const validPoints: L.LatLng[] = [];
@@ -863,7 +966,18 @@ export default function MapDisplay({
 
   // Road Editor submission
   const applyRoadEdit = async () => {
-    if (routeNodes.length < 2) return;
+    if (routeNodes.length < 2) {
+      showToast('Select two points further apart on the road to apply an edit.');
+      return;
+    }
+    if (!isClosing && (newSpeed === '' || Number(newSpeed) <= 0)) {
+      showToast('Please enter a speed limit (mph) before applying.');
+      return;
+    }
+    if (!isBidirectional && !isBackClosing && (backSpeed === '' || Number(backSpeed) <= 0)) {
+      showToast('Please enter a Direction B → A speed limit (mph) before applying.');
+      return;
+    }
     if (!editReason.trim()) {
       showToast('Please provide a reason for this edit.');
       return;
@@ -873,15 +987,17 @@ export default function MapDisplay({
     const to_node = '';
     const editLat = routeCoordinates[0][0];
     const editLng = routeCoordinates[0][1];
-    const safeForwardMph = Math.max(1, Math.min(200, Number(newSpeed) || 1));
-    const safeBackwardMph = Math.max(1, Math.min(200, Number(backSpeed) || 1));
+    const safeForwardMph = Math.max(0.1, Math.min(200, Number(newSpeed) || 1));
+    const safeBackwardMph = Math.max(0.1, Math.min(200, Number(backSpeed) || 1));
+    const forwardKmh = Number((safeForwardMph * 1.609344).toFixed(4));
+    const backwardKmh = Number((safeBackwardMph * 1.609344).toFixed(4));
     const edits: any[] = [];
 
     if (isBidirectional) {
       edits.push({
         from_node,
         to_node,
-        speed_kmh: isClosing ? 0 : Math.max(2, Math.round(safeForwardMph * 1.60934)),
+        speed_kmh: isClosing ? 0 : forwardKmh,
         is_closed: isClosing,
         is_bidirectional: true,
         reason: editReason.trim(),
@@ -895,7 +1011,7 @@ export default function MapDisplay({
       edits.push({
         from_node,
         to_node,
-        speed_kmh: isClosing ? 0 : Math.max(2, Math.round(safeForwardMph * 1.60934)),
+        speed_kmh: isClosing ? 0 : forwardKmh,
         is_closed: isClosing,
         is_bidirectional: false,
         reason: `[Forward] ${editReason.trim()}`,
@@ -908,7 +1024,7 @@ export default function MapDisplay({
       edits.push({
         from_node: [...routeNodes].reverse().join(','),
         to_node: '',
-        speed_kmh: isBackClosing ? 0 : Math.max(2, Math.round(safeBackwardMph * 1.60934)),
+        speed_kmh: isBackClosing ? 0 : backwardKmh,
         is_closed: isBackClosing,
         is_bidirectional: false,
         reason: `[Backward] ${editReason.trim()}`,
@@ -1052,6 +1168,11 @@ export default function MapDisplay({
             icon={gmapsStartIcon}
             draggable={true}
             eventHandlers={{
+              click: () => {
+                if (panelMode === 'directions' && (!endPoint || stops.some((s) => !s.point))) {
+                  void handleMapClick(startPoint);
+                }
+              },
               dragend: (e) => handleDragStartMarker(e.target.getLatLng())
             }}
           />
@@ -2444,12 +2565,17 @@ export default function MapDisplay({
                       type="number"
                       min={1}
                       max={200}
+                      step="any"
+                      placeholder={speedPlaceholder}
                       value={newSpeed}
-                      onChange={(e) => setNewSpeed(Math.max(0, Math.min(200, Number(e.target.value))))}
-                      onBlur={() => setNewSpeed((v) => Math.max(1, Math.min(200, Number(v) || 1)))}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setNewSpeed(raw === '' ? '' : Math.max(0, Math.min(200, Number(raw))));
+                      }}
+                      onBlur={() => setNewSpeed((v) => (v === '' ? '' : Math.max(0.1, Math.min(200, Number(v) || 1))))}
                       disabled={isClosing}
                       style={{
-                        width: '45px',
+                        width: '54px',
                         background: 'var(--gmaps-bg)',
                         border: '1px solid var(--gmaps-border)',
                         borderRadius: '4px',
@@ -2511,12 +2637,17 @@ export default function MapDisplay({
                         type="number"
                         min={1}
                         max={200}
+                        step="any"
+                        placeholder={speedPlaceholder}
                         value={backSpeed}
-                        onChange={(e) => setBackSpeed(Math.max(0, Math.min(200, Number(e.target.value))))}
-                        onBlur={() => setBackSpeed((v) => Math.max(1, Math.min(200, Number(v) || 1)))}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setBackSpeed(raw === '' ? '' : Math.max(0, Math.min(200, Number(raw))));
+                        }}
+                        onBlur={() => setBackSpeed((v) => (v === '' ? '' : Math.max(0.1, Math.min(200, Number(v) || 1))))}
                         disabled={isBackClosing}
                         style={{
-                          width: '45px',
+                          width: '54px',
                           background: 'var(--gmaps-bg)',
                           border: '1px solid var(--gmaps-border)',
                           borderRadius: '4px',

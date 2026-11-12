@@ -70,16 +70,17 @@ The platform provides a modern command-center interface to:
                                                                       |     - mediagis/nominatim:5.3
                                                                       |
                                                                       +---> Pelias Geocoding Stack:
-                                                                      |     - routeops-pelias-elasticsearch-1 (:9200)
+                                                                      |     - routeops-pelias-elasticsearch-1 (:9200 internal, pelias-data vol)
                                                                       |     - routeops-pelias-1 (:5002 -> :3100)
                                                                       |     - pelias/schema (on build)
                                                                       |     - pelias/openstreetmap (on build)
                                                                       |
-                                                                      +---> stefda/osmium-tool (ephemeral merge)
+                                                                      +---> stefda/osmium-tool (ephemeral merge & maxspeed OPL filter)
                                                                       |
                                                                       +---> Persistent Volume: /data
-                                                                            - osrm_portal.db, speeds.csv, active_states.json, ports.json
-                                                                            - deploy.log, api_calls.json, pelias.json
+                                                                            - osrm_portal.db, speeds.csv, speed_overrides.json, active_states.json, ports.json
+                                                                            - deploy.log, api_calls.json, pelias.json, osrm_maxspeed_proxy.py
+                                                                            - car_maxspeed.sqlite, foot_maxspeed.sqlite
                                                                             - *.osrm*, backup_*
                                                                             - (*.osm.pbf purged post-install)
 ```
@@ -108,7 +109,7 @@ c:\Code\OSRM 2\
 │   ├── database.py                 # SQLAlchemy database setup, RoadOverride & User models
 │   ├── main.py                     # Main application entry point, REST endpoints, Docker orchestrator
 │   ├── osrm_maxspeed_proxy.py      # Stdlib HTTP sidecar proxy adding single-road OSM max_speed {mph, kph}
-│   ├── state_bounds.json           # US geographic bounding boxes for state regions
+│   ├── state_bounds.json           # Global geographic bounding boxes (257 regions: Planet, Continents, Countries, US States)
 │   ├── alembic.ini                 # Alembic migration configuration
 │   └── alembic/                    # Alembic migration scripts
 │       ├── env.py                  # Alembic runtime environment connecting to SQLAlchemy models
@@ -152,13 +153,18 @@ c:\Code\OSRM 2\
 │           └── ActiveEdits.tsx     # Active road overrides grid, state filtering, pagination, deletion
 │
 └── data/                           # Runtime storage mounted into containers (git-ignored)
-    ├── active_states.json          # Currently deployed states per engine profile
+    ├── osrm_portal.db              # Persistent SQLite database (users & road overrides) when running inside Docker
+    ├── active_states.json          # Currently deployed regions per engine profile
     ├── ports.json                  # Persisted custom host port bindings per engine profile
     ├── speeds.csv                  # Road speed penalties generated from database for osrm-customize
+    ├── speed_overrides.json        # Exported active speed overrides consumed by osrm_maxspeed_proxy.py
     ├── deploy.log                  # Live log file streamed to the UI during build/merge/deploy
     ├── api_calls.json              # Buffer of recent API hits for analytics
     ├── pelias.json                 # Pelias configuration generated on deployment
-    ├── *.osm.pbf                   # Ephemeral state & merged PBF files (auto-deleted post-install)
+    ├── osrm_maxspeed_proxy.py      # Synced runtime copy of single-road OSM maxspeed HTTP sidecar
+    ├── car_maxspeed.sqlite         # Indexed OSM maxspeed + road name/ref segments for Car profile
+    ├── foot_maxspeed.sqlite        # Indexed OSM maxspeed + road name/ref segments for Foot profile
+    ├── *.osm.pbf                   # Ephemeral region & merged PBF files (auto-deleted post-install)
     ├── car.osrm* / foot.osrm*      # Compiled OSRM routing graphs
     └── backup_car/ / backup_foot/  # Clean, unpatched OSRM graph backups
 ```
@@ -221,38 +227,38 @@ On startup (`@app.on_event("startup")`):
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/overrides` | Retrieves all active road overrides from DB. |
-| `POST` | `/overrides` | Inserts a new road override and schedules background `rebuild_osrm_data`. |
-| `POST` | `/overrides/bulk` | Inserts multiple overrides and schedules background `rebuild_osrm_data`. |
-| `DELETE` | `/overrides/{override_id}` | Removes an override and schedules background `rebuild_osrm_data`. |
+| `POST` | `/overrides` | Inserts a new road override and schedules serialized/coalesced background `rebuild_osrm_data`. |
+| `POST` | `/overrides/bulk` | Inserts multiple directional overrides in one transaction and schedules a single background `rebuild_osrm_data`. |
+| `DELETE` | `/overrides/{override_id}` | Removes an override (`404` if ID does not exist) and schedules background `rebuild_osrm_data`. |
 
 #### OSRM & Deployment Lifecycle
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/system/merge` | **Fresh Deployment:** Downloads OSM PBFs, merges via `osmium-tool`, compiles graphs (`extract`, `partition`, `customize`), backs up graphs, recreates containers. |
-| `POST` | `/system/install-all` | **Install All Engines:** `{regions, car_port, foot_port, nominatim_port, pelias_port}`. Downloads/merges the OSM data once (hardlinked as `car/foot/nominatim/pelias.osm.pbf`), then installs Car → Foot → Pelias → Nominatim one after another. Only internal helpers run during installation (osmium/osrm build jobs, Pelias Elasticsearch, and a `routeops-nominatim-import` container with no published port). The public service containers (`routeops-osrm-*` + maxspeed sidecars, `routeops-nominatim-1`, `routeops-pelias-1`) start only after **all** installations finish. Engines whose installation failed are not started. |
-| `POST` | `/system/update` | **Zero-Downtime Update:** Downloads new state PBFs, merges, compiles graphs, and hot-swaps active memory using `osrm-datastore` without restarting containers. |
-| `POST` | `/system/deploy` | Rebuilds and launches OSRM containers for given ports. |
-| `GET` | `/osrm/{car\|foot}/{service}/v1/{osrm_profile}/{coordinates}` | **OSRM proxy with single-road OSM maxspeed.** Identical enrichment to direct OSRM engine ports (`:5001` / `:5005`): for `route` responses, adds `"max_speed": {"mph": <float>, "kph": <float>}` (or `{"mph": null, "kph": null, "unlimited": true}` for `maxspeed=none`, or `null` if untagged) onto each route in `routes[]` **only if the entire route stays on the same road**. Multi-road routes omit `max_speed`. All speeds come strictly from OSM `maxspeed` tags. If the route traverses no tagged segment (e.g. pickup == dropoff → zero-length route), the OSM segment the waypoint snapped to (via OSRM `/nearest`, matched by road name) is used. |
+| `POST` | `/system/merge` | **Fresh Deployment:** Validates engine ports (`400`) and active deployment lock (`409`), downloads OSM PBFs, merges via `osmium-tool`, compiles graphs (`extract`, `partition`, `customize`), backs up graphs, recreates containers. |
+| `POST` | `/system/install-all` | **Install All Engines:** `{regions, car_port, foot_port, nominatim_port, pelias_port, force_download}`. Validates ports (`400`) and deployment lock (`409`), downloads/merges the OSM data once (shared across `car/foot/nominatim/pelias.osm.pbf`), then installs Car → Foot → Pelias → Nominatim sequentially using internal non-published helpers (`osmium`/`osrm`, internal Pelias Elasticsearch, pre-pulled `pelias/api:master`, and internal `routeops-nominatim-import`). Starts all 4 public containers together only after **all** installations finish. |
+| `POST` | `/system/update` | **Zero-Downtime Update:** Validates ports (`400`) and deployment lock (`409`), downloads new region PBFs, merges, compiles graphs, and hot-swaps active memory using `osrm-datastore` without restarting containers. |
+| `POST` | `/system/deploy` | Rebuilds and launches OSRM containers for given validated ports (`409` if another deployment is active). |
+| `GET` | `/osrm/{car\|foot}/{service}/v1/{osrm_profile}/{coordinates}` | **OSRM proxy with single-road OSM maxspeed.** Identical enrichment to direct OSRM engine ports (`:5001` / `:5005`): for `route` responses, adds `"max_speed": {"mph": <float>, "kph": <float>}` (or `{"mph": null, "kph": null, "unlimited": true}` for `maxspeed=none`, or `null` if untagged in OSM) onto each route in `routes[]` **only if the entire route stays on the same road**. Multi-road routes omit `max_speed`. Speeds come strictly from OSM `maxspeed` tags with any active Road Editor speed override (`speed_overrides.json` / `osrm_portal.db`) applied on top. Zero-length routes (`pickup == dropoff`) on both two-way and one-way (`[node, 0]`) roads resolve via OSRM `/nearest` matched against OSM `name`/`ref`. |
 | `GET` | `/system/logs` | Reads `/data/deploy.log` line-by-line for live frontend build tracking. |
 | `POST` | `/system/bootstrap` | Checks dependencies, Docker connectivity, map files, and container states. |
 
 #### Docker & Telemetry
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/system/metrics` | Host telemetry: CPU %, RAM %, Disk usage %, Disk read/write rates, Net in/out rates. |
+| `GET` | `/system/metrics` | Host telemetry: CPU %, RAM %, Disk usage %, Disk read/write rates, Net in/out rates (null-safe & clamped non-negative). |
 | `GET` | `/system/db-status` | Tests database connectivity with `SELECT 1`. |
-| `GET` | `/system/docker` | Container statuses, ports, started timestamps, active states, and log file sizes. |
-| `GET` | `/system/docker/{profile}/stats` | Live Docker stats for `car` or `foot` (CPU %, memory usage, I/O). |
-| `GET` | `/system/docker/{profile}/logs` | Tail last 50 lines of logs for specified container. |
-| `POST` | `/system/docker/{profile}/start` | Starts specified container. |
-| `POST` | `/system/docker/{profile}/stop` | Stops specified container. |
-| `POST` | `/system/docker/{profile}/clear_logs` | Truncates container JSON log file via ephemeral Alpine mount. |
+| `GET` | `/system/docker` | Container statuses, ports, started timestamps, active regions, accurate `_deployment_active` flag, and aggregated log sizes (including maxspeed sidecars & Pelias ES). |
+| `GET` | `/system/docker/{profile}/stats` | Live Docker stats for `car`, `foot`, `nominatim`, or `pelias` (CPU %, memory usage, network & disk I/O, with native Docker SDK fallback). |
+| `GET` | `/system/docker/{profile}/logs` | Tail last 50 lines of logs for specified container (`car`, `foot`, `nominatim`, `pelias`). |
+| `POST` | `/system/docker/{profile}/start` | Starts specified engine container alongside its paired maxspeed sidecar or Pelias Elasticsearch container. |
+| `POST` | `/system/docker/{profile}/stop` | Stops specified engine container alongside its paired maxspeed sidecar or Pelias Elasticsearch container. |
+| `POST` | `/system/docker/{profile}/clear_logs` | Truncates log files (`json-file` and `local` drivers) across all matching containers for that profile via race-free ephemeral Alpine helper. |
 | `POST` | `/system/docker/nominatim/restart` | Restarts Nominatim container. |
-| `POST` | `/system/docker/pelias/install` | Triggers Pelias index recreation and OSM import. |
+| `POST` | `/system/docker/pelias/install` | Triggers Pelias index recreation and OSM import (`409` if deployment active). |
 | `GET` | `/system/docker/nominatim/logs` | Tails last 100 log lines from Nominatim. |
 | `GET` | `/system/docker/pelias/logs` | Tails last 100 log lines from Pelias. |
-| `POST` | `/system/docker/remove-all` | Stops & removes all RouteOps engine containers/volumes and wipes `/data` (preserving `osrm_portal.db*`, `speeds.csv`, `ports.json`, and `osrm_maxspeed_proxy.py`). |
-| `POST` | `/system/exec` | Runs sanitized `docker` CLI command and pipes output to `deploy.log`. |
+| `POST` | `/system/docker/remove-all` | Stops & removes all RouteOps engine containers, maxspeed sidecars, and `nominatim-data`/`pelias-data` volumes, and cleans `/data` (preserving `osrm_portal.db*`, `speeds.csv`, `ports.json`, and `osrm_maxspeed_proxy.py`). |
+| `POST` | `/system/exec` | Runs sanitized `docker` commands (`shell=False`, shell metacharacters blocked, with native Docker SDK fallback when `docker` CLI binary is absent) and writes output to `deploy.log`. |
 
 #### API Call Analytics
 | Method | Endpoint | Description |
@@ -390,7 +396,8 @@ The `./data` directory is mounted into Docker containers as `/data`. It contains
 
 | File / Folder | Description |
 |---|---|
-| `active_states.json` | JSON dictionary mapping engine profile (`car`, `foot`, `nominatim`, `pelias`) to list of installed state slugs. |
+| `osrm_portal.db` | Persistent SQLite database (`users` and `road_overrides` tables) automatically used inside Docker unless `DATABASE_URL` is set. |
+| `active_states.json` | JSON dictionary mapping engine profile (`car`, `foot`, `nominatim`, `pelias`) to list of installed region slugs. |
 | `ports.json` | Persisted custom host port assignments (`car`, `foot`, `nominatim`, `pelias`). |
 | `speeds.csv` | Comma-delimited file containing `<from_node>,<to_node>,<speed>` used by `osrm-customize`. |
 | `deploy.log` | Text log tracking current and past deployments, downloads, merge steps, and `[CLEANUP]` events. |
@@ -408,16 +415,16 @@ The `./data` directory is mounted into Docker containers as `/data`. It contains
 ## 7. Docker Compose Environments
 
 ### 7.1 Development (`docker-compose.yml`)
-- Backend mounted from `./backend` to `/app` with auto-reloading (`WATCHFILES_FORCE_POLLING=true`).
-- Frontend mounted from `./frontend` to `/app` with polling (`CHOKIDAR_USEPOLLING=true`) on port `5173`.
+- Backend mounted from `./backend` to `/app` on port `8000:8000` with auto-reloading (`WATCHFILES_FORCE_POLLING=true`).
+- Frontend mounted from `./frontend` to `/app` with polling (`CHOKIDAR_USEPOLLING=true`) on port `5173:5173` (`vite.config.ts` auto-proxies `/api` to `http://backend:8000` inside Docker or `http://127.0.0.1:8000` on host).
 - PostgreSQL/PostGIS database on port `5433:5432`.
 - Host Docker socket mounted at `/var/run/docker.sock`.
-- Host `/proc` mounted at `/host_proc:ro` for psutil metrics inside Linux containers.
+- Host `/proc` mounted at `/host_proc:ro` (`PROCFS_PATH=/host_proc`) for accurate whole-host `psutil` metrics inside Linux containers.
 
 ### 7.2 Production (`docker-compose.prod.yml`)
-- Backend runs standalone Dockerfile on port `5172:8000`.
-- Frontend multi-stage build: compiles Vite SPA and serves static bundle via Nginx on port `80:80`.
-- Nginx proxies `/api/*` requests directly to backend container at `http://backend:8000/`.
+- Backend runs standalone Dockerfile on port `5172:8000` with `/proc:/host_proc:ro` and persistent `./data:/data`.
+- Frontend multi-stage build: compiles Vite SPA (`tsc -b && vite build`) and serves static bundle via Nginx on port `80:80`.
+- Nginx proxies `/api/*` requests to `http://backend:8000/` with `client_max_body_size 50m` and `300s` read/send timeouts.
 - PostgreSQL/PostGIS on port `5433:5432` with persistent `db_data` volume.
 
 ### 7.3 Geocoding Stack (`docker-compose.geocoding.yml`)
@@ -503,6 +510,14 @@ When run, the scripts prompt:
 ## 11. Release History & Changelog
 
 ### v2.4.0 (Current)
+- **Single-Road OSM `max_speed` (`mph` & `kph`) API Enrichment:**
+  - Enriches direct OSRM Car (`:5001`) and Foot (`:5005`) `/route/v1/...` responses (via `routeops-maxspeed-{car|foot}-1` netns sidecars) and `/api/osrm/...` responses with `"max_speed": {"mph": <float>, "kph": <float>}` strictly from OpenStreetMap `maxspeed` tags **only** when the entire route stays on a single road (`null` if untagged in OSM, `{"mph": null, "kph": null, "unlimited": true}` for `maxspeed=none`, omitted on multi-road routes).
+  - Supports zero-length routes (`pickup == dropoff`) on both two-way and one-way (`[node, 0]`) roads via cached OSRM `/nearest` fallback matched against OSM `name` and `ref`.
+- **One-Click Install All Engines (`POST /system/install-all`):**
+  - Downloads and merges selected OSM regions once, shares the extract across Car, Foot, Nominatim, and Pelias, builds/imports all 4 engines sequentially without publishing ports during installation, and starts all 4 live containers together only after every installation finishes.
+- **Global 257-Region Catalog & Platform Hardening:**
+  - Verified all 257 Geofabrik/Planet region slugs and bounding boxes across frontend (`regionsCatalog.ts`, `stateBounds.json`) and backend (`state_bounds.json`, `get_geofabrik_url()`).
+  - Persistent SQLite storage on `/data/osrm_portal.db` inside Docker, serialized & coalesced hot-swap `rebuild_osrm_data()`, race-free Docker helper execution, port collision/reserved-port validation across UI/API/installers, multi-stop road-segment editing across all `legs[]`, and full Light/Dark theme contrast parity.
 - **Strictly Local Geocoding & Reverse Geocoding:**
   - Forward search (`searchPlaces`) and reverse geocoding (`reverseGeocode`) on the Live Map now strictly query installed local **Pelias** (`routeops-pelias-1` / port 5002) or **Nominatim** (`routeops-nominatim-1` / port 5003).
   - Completely purged all third-party external public web fallbacks (Photon Komoot, OpenStreetMap public Nominatim, BigDataCloud) for full air-gapped compliance, self-hosted privacy, and offline stability.

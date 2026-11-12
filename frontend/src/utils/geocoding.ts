@@ -65,20 +65,36 @@ export async function searchPlaces(
   const clean = query.trim();
   if (!clean) return [];
 
-  // Check if user entered coordinates directly (e.g. "39.29088, -76.61075")
-  const coordMatch = clean.match(/^([-+]?\d{1,2}(?:\.\d+)?),\s*([-+]?\d{1,3}(?:\.\d+)?)$/);
+  // Check if user entered coordinates directly — supports both "lat, lng" and OSRM "lng, lat" (including 3-digit longitudes like -112.015)
+  const coordMatch = clean.match(/^([-+]?\d{1,3}(?:\.\d+)?),\s*([-+]?\d{1,3}(?:\.\d+)?)$/);
   if (coordMatch) {
-    const lat = parseFloat(coordMatch[1]);
-    const lng = parseFloat(coordMatch[2]);
-    if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-      return [{
-        id: `coord-${lat}-${lng}`,
-        title: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
-        subtitle: 'Coordinates',
-        lat,
-        lng,
-        type: 'coordinate'
-      }];
+    const a = parseFloat(coordMatch[1]);
+    const b = parseFloat(coordMatch[2]);
+    const coordResults: PlaceResult[] = [];
+    if (!isNaN(a) && !isNaN(b)) {
+      if (a >= -90 && a <= 90 && b >= -180 && b <= 180) {
+        coordResults.push({
+          id: `coord-${a}-${b}`,
+          title: `${a.toFixed(5)}, ${b.toFixed(5)}`,
+          subtitle: 'Coordinates (lat, lng)',
+          lat: a,
+          lng: b,
+          type: 'coordinate'
+        });
+      }
+      if (b >= -90 && b <= 90 && a >= -180 && a <= 180 && (Math.abs(a) > 90 || Math.abs(a - b) > 1e-9)) {
+        coordResults.push({
+          id: `coord-lnglat-${b}-${a}`,
+          title: `${b.toFixed(5)}, ${a.toFixed(5)}`,
+          subtitle: `OSRM Coordinates (lng, lat: ${a.toFixed(5)}, ${b.toFixed(5)})`,
+          lat: b,
+          lng: a,
+          type: 'coordinate'
+        });
+      }
+      if (coordResults.length > 0) {
+        return coordResults;
+      }
     }
   }
 

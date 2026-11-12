@@ -11,9 +11,11 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import unquote
 
 MPH_TO_KMH = 1.609344
@@ -206,6 +208,141 @@ def make_nearest_fetcher(fetch_json, osrm_profile: str):
     return fetcher
 
 
+_OVERRIDES_LOCK = threading.Lock()
+_OVERRIDES_CACHE = {}
+
+
+def _open_sqlite_ro(path: str):
+    """Opens a SQLite database read-only safely across Linux and Windows paths (including spaces)."""
+    try:
+        uri = f'{Path(path).resolve().as_uri()}?mode=ro'
+        return sqlite3.connect(uri, uri=True)
+    except Exception:
+        return sqlite3.connect(path)
+
+
+def _stat_sig(path: str):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _build_override_maps(records: list):
+    """Builds `(pairs, touching)` from ordered override dicts/rows (`id ASC`, latest wins)."""
+    pairs = {}
+    touching_by_edge = {}
+
+    def add_edge(a_raw, b_raw, kmh_val: float, road_name_norm: str):
+        a_str = str(a_raw or '').strip()
+        b_str = str(b_raw or '').strip()
+        if not (a_str.isdigit() and b_str.isdigit()):
+            return
+        a_id, b_id = int(a_str), int(b_str)
+        if a_id == b_id:
+            return
+        mph_val = kmh_val / MPH_TO_KMH
+        pairs[(a_id, b_id)] = (kmh_val, mph_val, 0, 'override')
+        touching_by_edge[(a_id, b_id)] = (kmh_val, mph_val, 0, 'override', road_name_norm, '')
+
+    for rec in records:
+        if bool(rec.get('is_closed')):
+            continue
+        try:
+            kmh = float(rec.get('speed_kmh') or 0)
+        except (TypeError, ValueError):
+            continue
+        if kmh <= 0:
+            continue
+        from_raw = str(rec.get('from_node') or '').strip()
+        to_raw = str(rec.get('to_node') or '').strip()
+        bidir = bool(rec.get('is_bidirectional'))
+        rname = str(rec.get('road_name') or '').strip().lower()
+        if ',' in from_raw:
+            ns = [s.strip() for s in from_raw.split(',') if s.strip()]
+            for i in range(len(ns) - 1):
+                add_edge(ns[i], ns[i + 1], kmh, rname)
+                if bidir:
+                    add_edge(ns[i + 1], ns[i], kmh, rname)
+        elif from_raw and to_raw:
+            add_edge(from_raw, to_raw, kmh, rname)
+            if bidir:
+                add_edge(to_raw, from_raw, kmh, rname)
+
+    touching = {}
+    for (a_id, b_id), row in touching_by_edge.items():
+        touching.setdefault(a_id, []).append(row)
+        touching.setdefault(b_id, []).append(row)
+    return pairs, touching
+
+
+def _load_speed_overrides(data_dir: str):
+    """Loads active non-closed speed overrides from `speed_overrides.json` or `osrm_portal.db` (mtime-cached)."""
+    if not data_dir or not os.path.isdir(data_dir):
+        return {}, {}
+
+    json_path = os.path.join(data_dir, 'speed_overrides.json')
+    db_candidates = [
+        os.path.join(data_dir, 'osrm_portal.db'),
+        os.path.abspath(os.path.join(data_dir, '..', 'backend', 'osrm_portal.db')),
+    ]
+    db_file = next((p for p in db_candidates if os.path.exists(p)), None)
+
+    json_sig = _stat_sig(json_path)
+    db_sig = _stat_sig(db_file) if db_file else None
+    wal_sig = _stat_sig(f'{db_file}-wal') if db_file else None
+    sig = (json_sig, db_file, db_sig, wal_sig)
+
+    with _OVERRIDES_LOCK:
+        cached = _OVERRIDES_CACHE.get(data_dir)
+        if cached and cached[0] == sig:
+            return cached[1], cached[2]
+
+    records = None
+    use_json = json_sig is not None and (
+        db_sig is None or json_sig[0] >= max(db_sig[0], wal_sig[0] if wal_sig else 0)
+    )
+    if use_json:
+        try:
+            with open(json_path, 'r', encoding='utf-8') as jf:
+                loaded = json.load(jf)
+            if isinstance(loaded, list):
+                records = loaded
+        except Exception:
+            records = None
+
+    if records is None and db_file:
+        ov_conn = None
+        try:
+            ov_conn = _open_sqlite_ro(db_file)
+            cur = ov_conn.execute(
+                'SELECT from_node, to_node, speed_kmh, is_closed, is_bidirectional, road_name '
+                'FROM road_overrides ORDER BY id ASC'
+            )
+            records = [
+                {
+                    'from_node': r[0],
+                    'to_node': r[1],
+                    'speed_kmh': r[2],
+                    'is_closed': r[3],
+                    'is_bidirectional': r[4],
+                    'road_name': r[5],
+                }
+                for r in cur.fetchall()
+            ]
+        except Exception:
+            records = []
+        finally:
+            if ov_conn is not None:
+                ov_conn.close()
+
+    pairs, touching = _build_override_maps(records or [])
+    with _OVERRIDES_LOCK:
+        _OVERRIDES_CACHE[data_dir] = (sig, pairs, touching)
+    return pairs, touching
+
+
 def enrich_osrm_response(
     data: dict,
     db_path: str,
@@ -216,31 +353,39 @@ def enrich_osrm_response(
 ) -> dict:
     """Adds `max_speed: {mph, kph}` onto each route in `data['routes']` that stays on a single road.
 
-    Speeds come strictly from OSM `maxspeed` tags. If the route's own node pairs yield no tagged
-    segment (e.g. pickup == dropoff -> zero-length route with no traversed segment), the OSM
-    segment each waypoint snapped to (via OSRM `/nearest`) is used instead.
+    Speeds come strictly from OSM `maxspeed` tags (with any active user speed override applied on top).
+    If the route's own node pairs yield no tagged segment (e.g. pickup == dropoff -> zero-length route
+    with no traversed segment), the road segment each waypoint snapped to (via OSRM `/nearest`) is used.
     """
     routes = data.get('routes')
     if not routes:
         return data
 
+    ov_pairs, ov_touching = _load_speed_overrides(os.path.dirname(db_path) if db_path else '')
+
     conn = None
     if db_path and os.path.exists(db_path):
         try:
-            conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+            conn = _open_sqlite_ro(db_path)
         except Exception:
             conn = None
 
     row_cache = {}
     has_names = False
+    has_seg_b = False
     if conn is not None:
         try:
             cols = {r[1] for r in conn.execute('PRAGMA table_info(vals)').fetchall()}
             has_names = {'name', 'ref'}.issubset(cols)
+            idx_names = {r[1] for r in conn.execute('PRAGMA index_list(seg)').fetchall()}
+            has_seg_b = 'seg_b' in idx_names
         except Exception:
             has_names = False
+            has_seg_b = False
 
     def lookup(a, b):
+        if conn is None:
+            return None
         key = (a, b)
         if key not in row_cache:
             row_cache[key] = conn.execute(
@@ -259,20 +404,10 @@ def enrich_osrm_response(
                 return True
         return False
 
-    def lookup_touching(nodes, match_keys):
-        """Rows for OSM segments starting at any of `nodes`, restricted to the route's road.
-
-        Used when `/nearest` only yields one node (one-way roads) or the node pair is not adjacent.
-        """
-        cols = 'v.kmh, v.mph, v.is_unlimited, v.raw' + (', v.name, v.ref' if has_names else '')
-        rows = []
-        for n in nodes:
-            rows.extend(conn.execute(
-                f'SELECT {cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.a = ?', (n,)
-            ).fetchall())
+    def _filter_touching_rows(rows, match_keys, named_schema: bool):
         if not rows:
             return []
-        if has_names and match_keys:
+        if named_schema and match_keys:
             named = [r for r in rows if _row_matches_road(r[4], r[5], match_keys)]
             if named:
                 return [r[:4] for r in named]
@@ -280,9 +415,36 @@ def enrich_osrm_response(
             rows = [r for r in rows if not (r[4] or r[5])]
             if not rows:
                 return []
-        # Without names, only accept an unambiguous result (all touching segments share the same OSM limit).
+        # Without names, only accept an unambiguous result (all touching segments share the same limit).
         distinct = {(r[0], r[1], r[2]) for r in rows}
         return [rows[0][:4]] if len(distinct) == 1 else []
+
+    def lookup_override_touching(nodes, match_keys):
+        if not ov_touching:
+            return []
+        rows = []
+        for n in nodes:
+            rows.extend(ov_touching.get(n) or [])
+        return _filter_touching_rows(rows, match_keys, named_schema=True)
+
+    def lookup_touching(nodes, match_keys):
+        """Rows for OSM segments touching `nodes`, restricted to the route's road.
+
+        Used when `/nearest` only yields one node (one-way roads) or the node pair is not adjacent.
+        """
+        if conn is None:
+            return []
+        cols = 'v.kmh, v.mph, v.is_unlimited, v.raw' + (', v.name, v.ref' if has_names else '')
+        rows = []
+        for n in nodes:
+            rows.extend(conn.execute(
+                f'SELECT {cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.a = ?', (n,)
+            ).fetchall())
+            if has_seg_b:
+                rows.extend(conn.execute(
+                    f'SELECT {cols} FROM seg s JOIN vals v ON v.id = s.v WHERE s.b = ?', (n,)
+                ).fetchall())
+        return _filter_touching_rows(rows, match_keys, named_schema=has_names)
 
     try:
         for route in routes:
@@ -303,14 +465,17 @@ def enrich_osrm_response(
                             state['kph'] = float(kmh_val)
                             state['mph'] = float(mph_val)
 
-                if conn is not None:
+                if conn is not None or ov_pairs:
                     # 1. Segments actually traversed by the route
                     for leg in route.get('legs') or []:
                         nodes = ((leg.get('annotation') or {}).get('nodes')) or []
                         for i in range(len(nodes) - 1):
-                            accumulate(lookup(nodes[i], nodes[i + 1]))
+                            a_n, b_n = nodes[i], nodes[i + 1]
+                            if a_n == b_n:
+                                continue
+                            accumulate(ov_pairs.get((a_n, b_n)) or lookup(a_n, b_n))
 
-                    # 2. Fallback: OSM segment the waypoints snapped to (pickup == dropoff, very short routes)
+                    # 2. Fallback: segment the waypoints snapped to (pickup == dropoff, very short routes)
                     if not state['found'] and nearest_fetcher is not None:
                         road_keys = _route_road_keys(route)
                         for wp in data.get('waypoints') or []:
@@ -336,11 +501,13 @@ def enrich_osrm_response(
                                 rows = []
                                 if len(cand_nodes) >= 2:
                                     a, b = cand_nodes[0], cand_nodes[1]
-                                    row = lookup(a, b) or lookup(b, a)
-                                    if row:
-                                        rows = [row]
+                                    ov_rows = [r for r in (ov_pairs.get((a, b)), ov_pairs.get((b, a))) if r is not None]
+                                    if ov_rows:
+                                        rows = ov_rows
+                                    else:
+                                        rows = [r for r in (lookup(a, b), lookup(b, a)) if r is not None]
                                 if not rows:
-                                    rows = lookup_touching(cand_nodes, match_keys)
+                                    rows = lookup_override_touching(cand_nodes, match_keys) or lookup_touching(cand_nodes, match_keys)
                                 for row in rows:
                                     accumulate(row)
                                 if state['found']:

@@ -180,7 +180,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                                             fontSize: '12px', 
                                             fontWeight: 700 
                                         }}>
-                                            {ov.is_closed ? 'CLOSED' : `${Math.round(ov.speed_kmh / 1.60934)} MPH`}
+                                            {ov.is_closed ? 'CLOSED' : `${Number((Number(ov.speed_kmh) / 1.609344).toFixed(1))} MPH`}
                                         </span>
                                     </div>
                                     <div style={{ display: 'flex', gap: '8px' }}>
