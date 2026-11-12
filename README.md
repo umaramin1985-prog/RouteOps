@@ -14,20 +14,21 @@ RouteOps is a powerful, full-stack transportation management system built around
 ## 🌟 Features
 
 *   **One-Click Global Deployment & Auto-Cleanup:** Automatically download map data (OSM `.pbf` from Planet OSM or Geofabrik) for the **Entire Planet**, any **Continent**, any **Country**, or any **US State**, spin up dedicated Docker containers, and automatically purge temporary `.osm.pbf` files, container caches, and ephemeral build containers upon completion.
+*   **Install All Engines at Once:** The **Install All Engines** button (Engines Setup → Docker Container Status) lets you pick the OSM regions once and installs Car, Foot, Nominatim and Pelias from the same downloaded data, one after another. No engine container is started until every installation has finished; then all four are started together.
 *   **Zero-Downtime Map Updates:** Add or remove states on-the-fly using the "Update States (Zero Downtime)" feature. The backend intelligently compiles new maps and swaps them into shared memory without dropping active API requests. Includes an automatic RAM safeguard that falls back to standard deployment if memory is low.
 *   **Zero-Downtime Hot-Swapping:** Close roads directly from the map UI. The backend uses `osrm-customize` and `osrm-datastore` via Shared Memory to instantly patch the routing engine in real-time without taking the server offline.
 *   **Strictly Self-Hosted Geocoding:** Integrated address search and reverse geocoding powered strictly by local **Pelias** and **Nominatim** containers with zero remote web requests.
 *   **Active Route Edits Management:** Monitor and manage thousands of hot-swapped road closures and speed adjustments in a dedicated, paginated grid with real-time search filtering.
 *   **Multi-Profile Routing:** Seamlessly switch between Car (driving) and Foot (walking) routing profiles.
 *   **Advanced Navigation & Debugging:** Avoid tolls, calculate alternative routes, view detailed turn-by-turn navigation instructions, and inspect raw, unformatted JSON API responses directly from the OSRM backend.
-*   **Road Max Speed in OSRM Responses:** Call `GET /api/osrm/{car|foot}/route/v1/{profile}/{coords}?...` (same parameters as OSRM) to get the normal OSRM response plus the legal OSM `maxspeed` per segment (`legs[].annotation.maxspeed`) and the highest limit per leg/route (`max_speed`, in km/h and mph). The lookup index is built automatically on each Car/Foot deployment or zero-downtime update.
+*   **Road Max Speed in OSRM Responses:** Direct calls to the Car (`:5001`) and Foot (`:5005`) OSRM `/route/v1/...` endpoints (as well as `GET /api/osrm/{car|foot}/route/v1/...`) automatically include `"max_speed": {"mph": <float>, "kph": <float>}` on each route in `routes[]` **only when the route stays on a single road** (`{"mph": null, "kph": null, "unlimited": true}` for OSM `maxspeed=none`, `null` if untagged in OSM, and omitted on multi-road routes). All speed limits come strictly from OpenStreetMap `maxspeed` tags indexed into SQLite during deployment or background startup backfill. Pickup and dropoff at the same location (zero-length route) also return the `max_speed` of the OSM road the point snaps to.
 *   **Real-Time System Telemetry:** Monitor whole-server CPU, RAM, Disk I/O, and Network statistics directly from the dashboard using integrated metric streaming.
 *   **Beautiful UI:** A modern, glassy, fully responsive React interface built for command centers, structured across dedicated tabs (Engines Setup, Live Map, and Active Edits).
 
 ## 🏗️ Architecture
 
 *   **Frontend:** React (Vite), TypeScript, Leaflet (Map rendering)
-*   **Backend:** Python (FastAPI), SQLAlchemy (PostgreSQL / PostGIS), Docker SDK
+*   **Backend:** Python (FastAPI), SQLAlchemy (SQLite persistent `/data/osrm_portal.db` by default, or PostgreSQL / PostGIS via `DATABASE_URL`), Docker SDK
 *   **Geocoding:** Pelias (Elasticsearch 7 + Node.js API) & Nominatim (mediagis)
 *   **Database:** Fully automated schema migrations via **Alembic**.
 *   **Engine:** OSRM (Open Source Routing Machine) running via Docker (Project `routeops`)
@@ -39,12 +40,12 @@ RouteOps is a powerful, full-stack transportation management system built around
 | Frontend UI (Production) | `80` | Yes (in `docker-compose.prod.yml`) | Web portal served by Nginx |
 | Frontend UI (Dev) | `5173` | Yes (in `docker-compose.yml`) | Vite Dev Server |
 | Backend API (Production) | `5172` (Host) -> `8000` (Container) | Yes | FastAPI REST API & Docker SDK controller |
-| Backend API (Dev) | `8000` | Yes | Local FastAPI server |
-| PostgreSQL / PostGIS | `5433` (Host) -> `5432` (Container) | Yes | Spatial database with persistent volume |
-| OSRM Car Engine | `5001` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) | Car driving routing profile |
-| OSRM Foot Engine | `5005` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) | Foot walking routing profile |
-| Nominatim Geocoding | `5003` (Host) -> `8080` (Container) | Yes (via UI & compose) | Self-hosted address search & reverse geocoding |
-| Pelias API | `5002` (Host) -> `4000` (Container) | Yes (via UI & compose) | Self-hosted autocomplete & reverse geocoding |
+| Backend API (Dev) | `8000` (Host) -> `8000` (Container) | Yes | Local FastAPI server |
+| PostgreSQL / PostGIS | `5433` (Host) -> `5432` (Container) | Yes | Spatial database container (optional via `DATABASE_URL`) |
+| OSRM Car Engine | `5001` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) | Car driving routing profile (with OSM `max_speed` proxy) |
+| OSRM Foot Engine | `5005` (Host) -> `5000` (Container) | Yes (via UI & `install.py`) | Foot walking routing profile (with OSM `max_speed` proxy) |
+| Nominatim Geocoding | `5003` (Host) -> `8080` (Container) | Yes (via UI, `install.py` & compose) | Self-hosted address search & reverse geocoding |
+| Pelias API | `5002` (Host) -> `3100` (Container) | Yes (via UI, `install.py` & compose) | Self-hosted autocomplete & reverse geocoding |
 | Pelias Elasticsearch | `9200` | Fixed internal | Elasticsearch 7 backend for Pelias |
 
 ## 🚀 Prerequisites

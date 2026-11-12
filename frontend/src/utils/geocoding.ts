@@ -86,8 +86,8 @@ export async function searchPlaces(
   const activeEngine = options?.activeEngine || 'osrm';
   const docker = options?.dockerStatus;
 
-  const isPeliasAvailable = docker?.pelias === 'running' || docker?.pelias_port;
-  const isNominatimAvailable = docker?.nominatim === 'running' || docker?.nominatim_port;
+  const isPeliasAvailable = docker ? docker.pelias === 'running' : false;
+  const isNominatimAvailable = docker ? docker.nominatim === 'running' : false;
 
   // Helper to query local Nominatim
   const tryLocalNominatim = async (): Promise<PlaceResult[] | null> => {
@@ -104,8 +104,9 @@ export async function searchPlaces(
           return data.map((item: any, idx: number) => {
             const lat = parseFloat(item.lat);
             const lng = parseFloat(item.lon);
-            const title = item.name || item.display_name.split(',')[0];
-            const subtitle = item.display_name;
+            const displayName = typeof item.display_name === 'string' ? item.display_name : '';
+            const title = item.name || displayName.split(',')[0] || clean;
+            const subtitle = displayName || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
             return {
               id: item.place_id ? String(item.place_id) : `nom-${idx}`,
               title,
@@ -129,6 +130,7 @@ export async function searchPlaces(
     if (!isPeliasAvailable) return null;
     const port = docker?.pelias_port || 5002;
     const t0 = performance.now();
+    let usedService: 'autocomplete' | 'search' = 'autocomplete';
     try {
       // 1. Try autocomplete first (ideal for prefix/typeahead search)
       let res = await fetch(`http://${hostname}:${port}/v1/autocomplete?text=${encodeURIComponent(clean)}&size=8`, { signal: AbortSignal.timeout(2000) });
@@ -136,6 +138,7 @@ export async function searchPlaces(
 
       // 2. If autocomplete returned no features, try full search endpoint
       if (!data?.features || data.features.length === 0) {
+        usedService = 'search';
         res = await fetch(`http://${hostname}:${port}/v1/search?text=${encodeURIComponent(clean)}&size=8`, { signal: AbortSignal.timeout(2500) });
         if (res.ok) {
           data = await res.json();
@@ -143,7 +146,7 @@ export async function searchPlaces(
       }
 
       const latency = `${Math.round(performance.now() - t0)}ms`;
-      recordApiCall({ profile: 'pelias', service: 'search', latency, path: clean, status: res.status });
+      recordApiCall({ profile: 'pelias', service: usedService, latency, path: clean, status: res.status });
 
       if (data?.features?.length > 0) {
         return data.features.map((f: any, idx: number) => {
@@ -162,7 +165,7 @@ export async function searchPlaces(
       }
     } catch {
       const latency = `${Math.round(performance.now() - t0)}ms`;
-      recordApiCall({ profile: 'pelias', service: 'search', latency, path: clean, status: 500 });
+      recordApiCall({ profile: 'pelias', service: usedService, latency, path: clean, status: 500 });
     }
     return null;
   };
@@ -206,8 +209,8 @@ export async function reverseGeocode(
 ): Promise<ReverseGeocodeResult> {
   const hostname = window.location.hostname || 'localhost';
 
-  const isPeliasAvailable = dockerStatus?.pelias === 'running' || dockerStatus?.pelias_port;
-  const isNominatimAvailable = dockerStatus?.nominatim === 'running' || dockerStatus?.nominatim_port;
+  const isPeliasAvailable = dockerStatus ? dockerStatus.pelias === 'running' : false;
+  const isNominatimAvailable = dockerStatus ? dockerStatus.nominatim === 'running' : false;
 
   // 1. Helper to reverse-geocode via local Pelias
   const tryPeliasReverse = async (): Promise<ReverseGeocodeResult | null> => {

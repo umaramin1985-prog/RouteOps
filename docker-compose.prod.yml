@@ -1,5 +1,3 @@
-version: "3.8"
-
 name: routeops
 
 services:
@@ -7,11 +5,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    environment:
+      - PROCFS_PATH=/host_proc
     ports:
       - "5172:8000"
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock # Need this to restart OSRM containers from backend
+      - /proc:/host_proc:ro
     extra_hosts:
       - "host.docker.internal:host-gateway" # Fallback route from backend to OSRM host ports (maxspeed proxy)
     restart: always

@@ -16,6 +16,7 @@ if (Check-Command "python") {
 } else {
     Write-Host "[*] Installing Python 3..." -ForegroundColor Yellow
     winget install --id Python.Python.3.11 --accept-package-agreements --accept-source-agreements
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
 
 # Node.js check
@@ -25,6 +26,7 @@ if (Check-Command "node") {
 } else {
     Write-Host "[*] Installing Node.js..." -ForegroundColor Yellow
     winget install --id OpenJS.NodeJS --accept-package-agreements --accept-source-agreements
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
 
 # Docker check
@@ -56,6 +58,10 @@ if (Check-Command "docker") {
         if ($containers) { docker rm -f $containers 2>$null }
         $containersOsrm = docker ps -aq --filter name=osrm
         if ($containersOsrm) { docker rm -f $containersOsrm 2>$null }
+        $containersNom = docker ps -aq --filter name=nominatim
+        if ($containersNom) { docker rm -f $containersNom 2>$null }
+        $containersPel = docker ps -aq --filter name=pelias
+        if ($containersPel) { docker rm -f $containersPel 2>$null }
         $images = docker images -q --filter reference="*routeops*"
         if ($images) { docker image rm -f $images 2>$null }
         $imagesOsrm = docker images -q --filter reference="*osrm*"
@@ -64,14 +70,17 @@ if (Check-Command "docker") {
         if ($volumes) { docker volume rm -f $volumes 2>$null }
         $volumesOsrm = docker volume ls -q --filter name=osrm
         if ($volumesOsrm) { docker volume rm -f $volumesOsrm 2>$null }
+        docker volume rm -f nominatim-data pelias-data 2>$null
         Write-Host "[*] Cleaning up data folder and database..." -ForegroundColor Yellow
         Remove-Item -Path "data\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "backend\osrm_portal.db" -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "backend\osrm_portal.db*" -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "[*] Installing Docker Desktop..." -ForegroundColor Yellow
     winget install --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
-    Write-Host "[!] Docker Desktop has been installed but requires you to restart your PC and launch the Docker app once before continuing." -ForegroundColor Red
+    Write-Host "[!] Docker Desktop has been installed. Please restart your PC, launch Docker Desktop once until it is running, and then re-run .\setup-windows.ps1." -ForegroundColor Red
+    Read-Host -Prompt "Press Enter to exit"
+    exit 0
 }
 
 Write-Host "======================================" -ForegroundColor Cyan

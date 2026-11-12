@@ -7,6 +7,8 @@ services:
     environment:
       - WATCHFILES_FORCE_POLLING=true
       - PROCFS_PATH=/host_proc
+    ports:
+      - "8000:8000"
     volumes:
       - ./backend:/app
       - ./data:/data
@@ -34,6 +36,6 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-version: '3.8'
+
 volumes:
-  db_data: null
+  db_data:

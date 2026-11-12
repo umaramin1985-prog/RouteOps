@@ -278,7 +278,7 @@ export const WORLD_REGIONS: RegionItem[] = [
   { id: 'australia-oceania/australia', name: 'Australia', category: 'oceania', badge: 'OC' },
   { id: 'australia-oceania/cook-islands', name: 'Cook Islands', category: 'oceania', badge: 'OC' },
   { id: 'australia-oceania/fiji', name: 'Fiji', category: 'oceania', badge: 'OC' },
-  { id: 'australia-oceania/French-polynesia', name: 'French Polynesia', category: 'oceania', badge: 'OC' },
+  { id: 'australia-oceania/french-polynesia', name: 'French Polynesia', category: 'oceania', badge: 'OC' },
   { id: 'australia-oceania/kiribati', name: 'Kiribati', category: 'oceania', badge: 'OC' },
   { id: 'australia-oceania/marshall-islands', name: 'Marshall Islands', category: 'oceania', badge: 'OC' },
   { id: 'australia-oceania/micronesia', name: 'Micronesia', category: 'oceania', badge: 'OC' },
@@ -301,7 +301,7 @@ export const WORLD_REGIONS: RegionItem[] = [
 const REGION_MAP = new Map<string, RegionItem>(WORLD_REGIONS.map(r => [r.id, r]));
 
 export function getRegionName(id: string): string {
-  const found = REGION_MAP.get(id);
+  const found = REGION_MAP.get(id) || REGION_MAP.get(id.toLowerCase());
   if (found) return found.name;
   const slug = id.includes('/') ? id.split('/').pop() || id : id;
   return slug

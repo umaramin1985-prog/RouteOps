@@ -3,6 +3,22 @@ import { Trash2, Search, ChevronLeft, ChevronRight, Map } from 'lucide-react';
 import stateBounds from '../stateBounds.json';
 import { getRegionName } from '../utils/regionsCatalog';
 
+function parseUtcDate(ts: string | null | undefined): Date | null {
+    if (!ts) return null;
+    const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(ts);
+    const d = new Date(hasZone ? ts : `${ts}Z`);
+    return isNaN(d.getTime()) ? null : d;
+}
+
+async function querySortedOverrides(): Promise<any[]> {
+    const res = await fetch(`/api/overrides`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : [];
+    list.sort((a: any, b: any) => (parseUtcDate(b.created_at)?.getTime() ?? 0) - (parseUtcDate(a.created_at)?.getTime() ?? 0));
+    return list;
+}
+
 export default function ActiveEdits({ activeStates = [] }: { activeStates?: string[] }) {
     const role = localStorage.getItem('role') || 'admin';
     const [activeOverrides, setActiveOverrides] = useState<any[]>([]);
@@ -15,25 +31,21 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
     const [currentPage, setCurrentPage] = useState(1);
     const ITEMS_PER_PAGE = 24; // 24 items per page fits well in a grid
 
-    const fetchOverrides = async () => {
-        try {
-            const res = await fetch(`/api/overrides`, { cache: 'no-store' });
-            const data = await res.json();
-            // Sort by created_at descending (newest first)
-            data.sort((a: any, b: any) => new Date(b.created_at + 'Z').getTime() - new Date(a.created_at + 'Z').getTime());
-            setActiveOverrides(data);
-        } catch(err) {
-            console.error(err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     useEffect(() => {
-        fetchOverrides();
-        const handleUpdate = () => {
-            if (window.location.hash.replace('#', '') === 'edits' || event?.type === 'edit-applied') {
-                fetchOverrides();
+        const refresh = async () => {
+            try {
+                const data = await querySortedOverrides();
+                setActiveOverrides(data);
+            } catch (err) {
+                console.error(err);
+            } finally {
+                setLoading(false);
+            }
+        };
+        void refresh();
+        const handleUpdate = (e?: Event) => {
+            if (window.location.hash.replace('#', '') === 'edits' || e?.type === 'edit-applied') {
+                void refresh();
             }
         };
         window.addEventListener('hashchange', handleUpdate);
@@ -53,10 +65,11 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
         try {
             const res = await fetch(`/api/overrides/${overrideToRemove}`, { method: 'DELETE' });
             if (res.ok) {
-                fetchOverrides();
+                const data = await querySortedOverrides();
+                setActiveOverrides(data);
                 window.dispatchEvent(new Event('edit-removed'));
             }
-        } catch(err) {
+        } catch (err) {
             console.error(err);
         } finally {
             setOverrideToRemove(null);
@@ -64,7 +77,8 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
     };
 
     const goToMap = (ov: any) => {
-        window.location.hash = '#map';
+        window.history.pushState(null, '', '#map');
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
         // Add a slight delay to ensure the map tab renders before firing the event
         setTimeout(() => {
             window.dispatchEvent(new CustomEvent('map-goto', { detail: ov }));
@@ -79,13 +93,13 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                 (ov.reason && ov.reason.toLowerCase().includes(term)) ||
                 (ov.road_name && ov.road_name.toLowerCase().includes(term)) ||
                 (ov.city_name && ov.city_name.toLowerCase().includes(term)) ||
-                ov.from_node.toLowerCase().includes(term) ||
-                ov.to_node.toLowerCase().includes(term) ||
+                (ov.from_node || '').toLowerCase().includes(term) ||
+                (ov.to_node || '').toLowerCase().includes(term) ||
                 (ov.is_closed ? 'closed' : 'speed').includes(term)
             );
 
             let matchesState = true;
-            if (selectedStateFilter !== 'all' && ov.lat !== null && ov.lng !== null) {
+            if (selectedStateFilter !== 'all' && ov.lat != null && ov.lng != null) {
                 const bounds = (stateBounds as any)[selectedStateFilter];
                 if (bounds) {
                     const minLat = Math.min(bounds[0][0], bounds[1][0]);
@@ -101,15 +115,11 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
     }, [activeOverrides, searchTerm, selectedStateFilter]);
 
     const totalPages = Math.ceil(filteredOverrides.length / ITEMS_PER_PAGE);
+    const safePage = Math.min(currentPage, Math.max(1, totalPages));
     const currentData = useMemo(() => {
-        const start = (currentPage - 1) * ITEMS_PER_PAGE;
+        const start = (safePage - 1) * ITEMS_PER_PAGE;
         return filteredOverrides.slice(start, start + ITEMS_PER_PAGE);
-    }, [filteredOverrides, currentPage]);
-
-    // Reset to page 1 when search changes
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [searchTerm]);
+    }, [filteredOverrides, safePage]);
 
     if (loading) return <div style={{ padding: '24px', color: 'var(--text-secondary)' }}>Loading edits...</div>;
 
@@ -127,7 +137,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                     <div style={{ position: 'relative', width: '220px' }}>
                         <select
                             value={selectedStateFilter}
-                            onChange={(e) => setSelectedStateFilter(e.target.value)}
+                            onChange={(e) => { setSelectedStateFilter(e.target.value); setCurrentPage(1); }}
                             style={{ width: '100%', height: '40px', padding: '0 40px 0 16px', borderRadius: '8px', border: '1px solid var(--input-border)', background: 'var(--input-bg)', color: 'var(--text-primary)', outline: 'none', appearance: 'none', cursor: 'pointer', fontSize: '14px', boxSizing: 'border-box' }}
                         >
                             <option value="all">All Active Regions</option>
@@ -144,7 +154,7 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                             type="text" 
                             placeholder="Search by reason, node ID, or status..." 
                             value={searchTerm}
-                            onChange={e => setSearchTerm(e.target.value)}
+                            onChange={e => { setSearchTerm(e.target.value); setCurrentPage(1); }}
                             style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', width: '100%', fontSize: '13px' }}
                         />
                     </div>
@@ -189,13 +199,13 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                                     {ov.reason && <div style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: 500, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.5' }}>{ov.reason}</div>}
                                     <div style={{ color: 'var(--text-secondary)', fontSize: '12px', background: 'var(--input-bg)', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--input-border)', display: 'inline-flex', alignItems: 'center', gap: '6px', alignSelf: 'flex-start' }}>
                                         <Map size={14} /> 
-                                        {ov.road_name ? <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{ov.road_name}{ov.city_name ? `, ${ov.city_name}` : ''}</span> : (ov.lat && ov.lng ? `${ov.lat.toFixed(4)}, ${ov.lng.toFixed(4)}${ov.city_name ? ` in ${ov.city_name}` : ''}` : 'Custom Route Segment')}
+                                        {ov.road_name ? <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{ov.road_name}{ov.city_name ? `, ${ov.city_name}` : ''}</span> : (ov.lat != null && ov.lng != null ? `${Number(ov.lat).toFixed(4)}, ${Number(ov.lng).toFixed(4)}${ov.city_name ? ` in ${ov.city_name}` : ''}` : 'Custom Route Segment')}
                                     </div>
                                 </div>
                                 
                                 {ov.created_at && (
                                     <div style={{ paddingTop: '16px', borderTop: '1px solid var(--panel-border)', fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                        <span>Applied on: {new Date(ov.created_at + 'Z').toLocaleString()}</span>
+                                        <span>Applied on: {parseUtcDate(ov.created_at)?.toLocaleString() || ov.created_at}</span>
                                     </div>
                                 )}
                             </div>
@@ -206,19 +216,19 @@ export default function ActiveEdits({ activeStates = [] }: { activeStates?: stri
                     {totalPages > 1 && (
                         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '16px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--panel-border)' }}>
                             <button 
-                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                                disabled={currentPage === 1}
-                                style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: currentPage === 1 ? 'var(--text-secondary)' : 'var(--text-primary)', padding: '6px 12px', borderRadius: '4px', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
+                                disabled={safePage === 1}
+                                style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: safePage === 1 ? 'var(--text-secondary)' : 'var(--text-primary)', padding: '6px 12px', borderRadius: '4px', cursor: safePage === 1 ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
                             >
                                 <ChevronLeft size={16} /> Previous
                             </button>
                             <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                                Page <strong style={{ color: 'var(--text-primary)' }}>{currentPage}</strong> of <strong>{totalPages}</strong>
+                                Page <strong style={{ color: 'var(--text-primary)' }}>{safePage}</strong> of <strong>{totalPages}</strong>
                             </span>
                             <button 
-                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                                disabled={currentPage === totalPages}
-                                style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: currentPage === totalPages ? 'var(--text-secondary)' : 'var(--text-primary)', padding: '6px 12px', borderRadius: '4px', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))}
+                                disabled={safePage === totalPages}
+                                style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: safePage === totalPages ? 'var(--text-secondary)' : 'var(--text-primary)', padding: '6px 12px', borderRadius: '4px', cursor: safePage === totalPages ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
                             >
                                 Next <ChevronRight size={16} />
                             </button>

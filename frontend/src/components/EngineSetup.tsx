@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, AlertTriangle, Maximize, Minimize, Settings, Globe } from 'lucide-react';
+import { Search, AlertTriangle, Maximize, Minimize, Settings, Globe, Layers } from 'lucide-react';
 import { AreaChart, Area, Tooltip, ResponsiveContainer, YAxis } from 'recharts';
-import { recordApiCall } from '../utils/geocoding';
 import { WORLD_REGIONS, REGION_CATEGORIES, getRegionName } from '../utils/regionsCatalog';
 
 function formatUptime(startedAt: string | null | undefined): string {
@@ -30,10 +29,36 @@ const generateMockHistory = () => {
         ram: Math.floor(Math.random() * 10) + 40 + (Math.cos(i / 3) * 10),
         netIn: 0,
         netOut: 0,
+        netIO: 0,
         diskRead: 0,
-        diskWrite: 0
+        diskWrite: 0,
+        diskIO: 0
     }));
 };
+
+const RESERVED_PORTS = new Set([80, 5172, 5173, 5433, 8000, 9200]);
+
+function getPortsValidationError(ports: Record<'car' | 'foot' | 'nominatim' | 'pelias', string | number>): string | null {
+    const seen = new Map<number, string>();
+    for (const [name, raw] of Object.entries(ports)) {
+        const str = String(raw ?? '').trim();
+        if (!str || !/^\d+$/.test(str)) {
+            return `Enter a valid port number for ${name}.`;
+        }
+        const p = Number(str);
+        if (p < 1 || p > 65535) {
+            return `Port for ${name} (${p}) must be between 1 and 65535.`;
+        }
+        if (RESERVED_PORTS.has(p)) {
+            return `Port ${p} (${name}) is reserved by RouteOps internal services.`;
+        }
+        if (seen.has(p)) {
+            return `Duplicate port ${p} assigned to both ${seen.get(p)} and ${name}.`;
+        }
+        seen.set(p, name);
+    }
+    return null;
+}
 
 const formatSpeed = (bytesPerSec: number) => {
     if (bytesPerSec < 1024 * 1024) {
@@ -48,11 +73,13 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const role = localStorage.getItem('role') || 'admin';
     const [metrics, setMetrics] = useState<{ cpu: number, ram: number, disk_read: number, disk_write: number, net_in: number, net_out: number } | null>(null);
     const [history, setHistory] = useState<any[]>(generateMockHistory());
-    const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, nominatim?: string, pelias?: string, active_states?: any } | null>(null);
+    const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, nominatim?: string, pelias?: string, active_states?: any, is_deploying?: boolean } | null>(null);
     const [selectedStates, setSelectedStates] = useState<Record<string, string[]>>({ car: [], foot: [], nominatim: [], pelias: [] });
-    const [modalTab, setModalTab] = useState<'car' | 'foot' | 'nominatim' | 'pelias'>('car');
+    const [modalTab, setModalTab] = useState<'car' | 'foot' | 'nominatim' | 'pelias' | 'all'>('car');
+    const [allPorts, setAllPorts] = useState<Record<'car' | 'foot' | 'nominatim' | 'pelias', string>>({ car: '5001', foot: '5005', nominatim: '5003', pelias: '5002' });
     const [mergeStatus, setMergeStatus] = useState<string | null>(null);
     const [apiCalls, setApiCalls] = useState<any[]>([]);
+    const [nowMs, setNowMs] = useState<number>(() => Date.now());
     const [carPort, setCarPort] = useState<number>(5001);
     const [footPort, setFootPort] = useState<number>(5005);
     const [nominatimPort, setNominatimPort] = useState<number>(5003);
@@ -80,16 +107,19 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const logsContainerRef = useRef<HTMLDivElement>(null);
     const isScrolledToBottom = useRef(true);
 
-    const isDeploying = deployLogs.length > 0 && 
-                       !deployLogs[deployLogs.length - 1].includes('Deployment complete!') &&
-                       !deployLogs[deployLogs.length - 1].includes('Deployment failed') &&
-                       !deployLogs[deployLogs.length - 1].includes('Listening for deployment events...');
+    const isDeploying = dockerStatus?.is_deploying !== undefined
+        ? Boolean(dockerStatus.is_deploying)
+        : (deployLogs.length > 0 &&
+           !deployLogs[deployLogs.length - 1].includes('Deployment complete!') &&
+           !deployLogs[deployLogs.length - 1].includes('Deployment failed') &&
+           !deployLogs[deployLogs.length - 1].includes('Bootstrap sequence complete!') &&
+           !deployLogs[deployLogs.length - 1].includes('Listening for deployment events...'));
 
     useEffect(() => {
         if (logsContainerRef.current && isScrolledToBottom.current) {
             logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
         }
-    }, [apiCalls, deployLogs, viewMode]);
+    }, [apiCalls, deployLogs, carLogs, footLogs, nominatimLogs, peliasLogs, viewMode]);
 
     const getVisibleRegions = () => {
         return WORLD_REGIONS.filter(r => {
@@ -104,6 +134,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     };
 
     const toggleState = (sid: string) => {
+        if (role === 'guest') return;
         setSelectedStates(prev => {
             const currentTabStates = prev[modalTab] || [];
             if (sid === 'planet') {
@@ -153,19 +184,25 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     const data = await res.json();
                     setMetrics(data);
                     setHistory(prev => {
+                        const netIn = data.net_in || 0;
+                        const netOut = data.net_out || 0;
+                        const diskRead = data.disk_read || 0;
+                        const diskWrite = data.disk_write || 0;
                         const newHist = [...prev.slice(1), {
                             time: prev[prev.length - 1].time + 1,
                             cpu: data.cpu,
                             ram: data.ram,
-                            netIn: data.net_in || 0,
-                            netOut: data.net_out || 0,
-                            diskRead: data.disk_read || 0,
-                            diskWrite: data.disk_write || 0
+                            netIn,
+                            netOut,
+                            netIO: netIn + netOut,
+                            diskRead,
+                            diskWrite,
+                            diskIO: diskRead + diskWrite
                         }];
                         return newHist;
                     });
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
         };
 
         const fetchDocker = async () => {
@@ -189,7 +226,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                         }
                     }
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
         };
 
         const fetchApiCalls = async () => {
@@ -198,8 +235,9 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                 if (res.ok) {
                     const data = await res.json();
                     setApiCalls(data.calls || []);
+                    setNowMs(Date.now());
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
         };
 
         const fetchDeployLogs = async () => {
@@ -209,73 +247,41 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     const data = await res.json();
                     setDeployLogs(data.logs || []);
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
             try {
                 const resCar = await fetch(`/api/system/docker/car/logs`);
                 if (resCar.ok) {
                     const data = await resCar.json();
                     setCarLogs(data.logs || []);
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
             try {
                 const resFoot = await fetch(`/api/system/docker/foot/logs`);
                 if (resFoot.ok) {
                     const data = await resFoot.json();
                     setFootLogs(data.logs || []);
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
             try {
                 const resNom = await fetch(`/api/system/docker/nominatim/logs`);
                 if (resNom.ok) {
                     const data = await resNom.json();
                     setNominatimLogs(data.logs || []);
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
             try {
                 const resPel = await fetch(`/api/system/docker/pelias/logs`);
                 if (resPel.ok) {
                     const data = await resPel.json();
                     setPeliasLogs(data.logs || []);
                 }
-            } catch (e) { }
+            } catch { /* ignore transient poll error */ }
         };
 
         fetchMetrics();
         fetchDocker();
         fetchApiCalls();
         fetchDeployLogs();
-
-        const pingGeocoders = async () => {
-            const hostname = window.location.hostname || 'localhost';
-            const nomPort = nominatimPort || 5003;
-            const pelPort = peliasPort || 5002;
-
-            if (dockerStatus?.nominatim === 'running') {
-                const t0 = performance.now();
-                try {
-                    const res = await fetch(`http://${hostname}:${nomPort}/status`, { signal: AbortSignal.timeout(2000) });
-                    const latency = `${Math.round(performance.now() - t0)}ms`;
-                    recordApiCall({ profile: 'nominatim', service: 'status', latency, path: '/status', status: res.status });
-                } catch {
-                    const latency = `${Math.round(performance.now() - t0)}ms`;
-                    recordApiCall({ profile: 'nominatim', service: 'status', latency, path: '/status', status: 500 });
-                }
-            }
-            if (dockerStatus?.pelias === 'running') {
-                const t0 = performance.now();
-                try {
-                    const res = await fetch(`http://${hostname}:${pelPort}/status`, { signal: AbortSignal.timeout(2000) });
-                    const latency = `${Math.round(performance.now() - t0)}ms`;
-                    recordApiCall({ profile: 'pelias', service: 'status', latency, path: '/status', status: res.status });
-                } catch {
-                    const latency = `${Math.round(performance.now() - t0)}ms`;
-                    recordApiCall({ profile: 'pelias', service: 'status', latency, path: '/status', status: 500 });
-                }
-            }
-        };
-
-        pingGeocoders();
-        const pingInterval = setInterval(pingGeocoders, 20000);
 
         const interval = setInterval(() => {
             fetchMetrics();
@@ -286,7 +292,6 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
 
         return () => {
             clearInterval(interval);
-            clearInterval(pingInterval);
         };
     }, []);
 
@@ -297,8 +302,16 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     const confirmRemoveAllContainers = async () => {
         setShowRemoveConfirm(false);
         try {
-            await fetch(`/api/system/docker/remove-all`, { method: 'POST' });
-        } catch (e) { }
+            const res = await fetch(`/api/system/docker/remove-all`, { method: 'POST' });
+            if (res.ok) {
+                setActiveStates({ car: [], foot: [], nominatim: [], pelias: [] });
+                setApiCalls([]);
+                setCarLogs([]);
+                setFootLogs([]);
+                setNominatimLogs([]);
+                setPeliasLogs([]);
+            }
+        } catch { /* ignore error */ }
     };
 
     const handleDockerAction = async (profile: string, action: 'start' | 'stop' | 'clear_logs') => {
@@ -315,7 +328,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                 else if (profile === 'nominatim') setNominatimLogs([]);
                 else if (profile === 'pelias') setPeliasLogs([]);
             }
-        } catch (e) { }
+        } catch { /* ignore error */ }
     };
 
     const formatBytes = (bytes: number | undefined) => {
@@ -328,7 +341,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
     };
 
     const renderStats = (profile: string) => {
-        const now = Date.now();
+        const now = nowMs;
         const calls = apiCalls.filter(c => {
             if (c.profile !== profile) return false;
             let callTime = 0;
@@ -349,7 +362,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                         }
                     }
                 }
-            } catch (e) { }
+            } catch { /* ignore parse error */ }
 
             // If we still can't parse it, include it to be safe. Otherwise check 24h.
             if (!callTime || isNaN(callTime)) return true;
@@ -491,6 +504,8 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                 disabled={role === "guest" || isDeploying}
                 onClick={() => {
                     setModalTab(profile);
+                    setSearchQuery('');
+                    setRegionCategory('all');
                     setSelectedStates(activeStates);
                     const currentPort = (dockerStatus as any)?.[`${profile}_port`] ||
                         (profile === 'car' ? carPort : profile === 'foot' ? footPort : profile === 'nominatim' ? nominatimPort : peliasPort);
@@ -507,18 +522,90 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
         );
     };
 
-    const handleDeploy = async () => {
-        setMergeStatus('Starting Fresh Deployment...');
+    const openInstallAllModal = () => {
+        const ds: any = dockerStatus || {};
+        setModalTab('all');
+        setSearchQuery('');
+        setRegionCategory('all');
+        setSelectedStates(prev => ({ ...prev, all: [...(activeStates.car || [])] }));
+        setAllPorts({
+            car: String(ds.car_port || carPort || 5001),
+            foot: String(ds.foot_port || footPort || 5005),
+            nominatim: String(ds.nominatim_port || nominatimPort || 5003),
+            pelias: String(ds.pelias_port || peliasPort || 5002),
+        });
+        setShowModal(true);
+    };
+
+    const handleInstallAll = async () => {
+        const regions = selectedStates.all || [];
+        if (regions.length === 0) return;
+        const portErr = getPortsValidationError(allPorts);
+        if (portErr) return;
+        const ports = {
+            car: parseInt(allPorts.car, 10),
+            foot: parseInt(allPorts.foot, 10),
+            nominatim: parseInt(allPorts.nominatim, 10),
+            pelias: parseInt(allPorts.pelias, 10),
+        };
+        const prevActive = activeStates;
+        setMergeStatus('Installing all engines...');
         setShowModal(false);
-        setActiveStates(selectedStates);
+        setDockerStatus(prev => prev ? { ...prev, is_deploying: true } : prev);
+        setActiveStates({ car: regions, foot: regions, nominatim: regions, pelias: regions });
         setViewMode('deployment');
         setDeployLogs([]);
+        setCarPort(ports.car);
+        setFootPort(ports.foot);
+        setNominatimPort(ports.nominatim);
+        setPeliasPort(ports.pelias);
+        try {
+            const res = await fetch(`/api/system/install-all`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    regions,
+                    car_port: ports.car,
+                    foot_port: ports.foot,
+                    nominatim_port: ports.nominatim,
+                    pelias_port: ports.pelias,
+                    force_download: false
+                })
+            });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                setActiveStates(prevActive);
+                setDockerStatus(prev => prev ? { ...prev, is_deploying: false } : prev);
+                setDeployLogs([`Error: ${errData.error || res.statusText}`, 'Deployment failed']);
+                return;
+            }
+            setMergeStatus('Install-all initiated. See logs for progress.');
+        } catch (e) {
+            setActiveStates(prevActive);
+            setDockerStatus(prev => prev ? { ...prev, is_deploying: false } : prev);
+            setDeployLogs([`Error: ${e instanceof Error ? e.message : 'Network error'}`, 'Deployment failed']);
+        }
+    };
 
+    const handleDeploy = async () => {
+        if (modalTab === 'all') return;
         const enteredPort = parseInt(modalPort, 10);
-        const effectiveCarPort = modalTab === 'car' ? (enteredPort || carPort || 5001) : (carPort || 5001);
-        const effectiveFootPort = modalTab === 'foot' ? (enteredPort || footPort || 5005) : (footPort || 5005);
-        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 5003) : (nominatimPort || 5003);
-        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 5002) : (peliasPort || 5002);
+        const effectiveCarPort = modalTab === 'car' ? enteredPort : (carPort || 5001);
+        const effectiveFootPort = modalTab === 'foot' ? enteredPort : (footPort || 5005);
+        const effectiveNomPort = modalTab === 'nominatim' ? enteredPort : (nominatimPort || 5003);
+        const effectivePelPort = modalTab === 'pelias' ? enteredPort : (peliasPort || 5002);
+        if (getPortsValidationError({ car: effectiveCarPort, foot: effectiveFootPort, nominatim: effectiveNomPort, pelias: effectivePelPort })) {
+            return;
+        }
+
+        const prevActive = activeStates;
+        const nextActive = { ...activeStates, [modalTab]: selectedStates[modalTab] || [] };
+        setMergeStatus('Starting Fresh Deployment...');
+        setShowModal(false);
+        setDockerStatus(prev => prev ? { ...prev, is_deploying: true } : prev);
+        setActiveStates(nextActive);
+        setViewMode('deployment');
+        setDeployLogs([]);
 
         setCarPort(effectiveCarPort);
         setFootPort(effectiveFootPort);
@@ -532,11 +619,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
             pelias: modalTab === 'pelias'
         };
         try {
-            await fetch(`/api/system/merge`, {
+            const res = await fetch(`/api/system/merge`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    states: selectedStates,
+                    states: nextActive,
                     car_port: effectiveCarPort,
                     foot_port: effectiveFootPort,
                     nominatim_port: effectiveNomPort,
@@ -545,22 +632,40 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     engines
                 })
             });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                setActiveStates(prevActive);
+                setDockerStatus(prev => prev ? { ...prev, is_deploying: false } : prev);
+                setDeployLogs([`Error: ${errData.error || res.statusText}`, 'Deployment failed']);
+                return;
+            }
             setMergeStatus('Deployment initiated. See logs for progress.');
-        } catch (e) { }
+        } catch (e) {
+            setActiveStates(prevActive);
+            setDockerStatus(prev => prev ? { ...prev, is_deploying: false } : prev);
+            setDeployLogs([`Error: ${e instanceof Error ? e.message : 'Network error'}`, 'Deployment failed']);
+        }
     };
 
     const handleUpdate = async () => {
+        if (modalTab === 'all') return;
+        const enteredPort = parseInt(modalPort, 10);
+        const effectiveCarPort = modalTab === 'car' ? enteredPort : (carPort || 5001);
+        const effectiveFootPort = modalTab === 'foot' ? enteredPort : (footPort || 5005);
+        const effectiveNomPort = modalTab === 'nominatim' ? enteredPort : (nominatimPort || 5003);
+        const effectivePelPort = modalTab === 'pelias' ? enteredPort : (peliasPort || 5002);
+        if (getPortsValidationError({ car: effectiveCarPort, foot: effectiveFootPort, nominatim: effectiveNomPort, pelias: effectivePelPort })) {
+            return;
+        }
+
+        const prevActive = activeStates;
+        const nextActive = { ...activeStates, [modalTab]: selectedStates[modalTab] || [] };
         setMergeStatus('Starting Zero-Downtime Update...');
         setShowModal(false);
-        setActiveStates(selectedStates);
+        setDockerStatus(prev => prev ? { ...prev, is_deploying: true } : prev);
+        setActiveStates(nextActive);
         setViewMode('deployment');
         setDeployLogs([]);
-
-        const enteredPort = parseInt(modalPort, 10);
-        const effectiveCarPort = modalTab === 'car' ? (enteredPort || carPort || 5001) : (carPort || 5001);
-        const effectiveFootPort = modalTab === 'foot' ? (enteredPort || footPort || 5005) : (footPort || 5005);
-        const effectiveNomPort = modalTab === 'nominatim' ? (enteredPort || nominatimPort || 5003) : (nominatimPort || 5003);
-        const effectivePelPort = modalTab === 'pelias' ? (enteredPort || peliasPort || 5002) : (peliasPort || 5002);
 
         setCarPort(effectiveCarPort);
         setFootPort(effectiveFootPort);
@@ -574,11 +679,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
             pelias: modalTab === 'pelias'
         };
         try {
-            await fetch(`/api/system/update`, {
+            const res = await fetch(`/api/system/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    states: selectedStates,
+                    states: nextActive,
                     car_port: effectiveCarPort,
                     foot_port: effectiveFootPort,
                     nominatim_port: effectiveNomPort,
@@ -587,11 +692,23 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     engines
                 })
             });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                setActiveStates(prevActive);
+                setDockerStatus(prev => prev ? { ...prev, is_deploying: false } : prev);
+                setDeployLogs([`Error: ${errData.error || res.statusText}`, 'Deployment failed']);
+                return;
+            }
             setMergeStatus('Zero-Downtime Update initiated. See logs for progress.');
-        } catch (e) { }
+        } catch (e) {
+            setActiveStates(prevActive);
+            setDockerStatus(prev => prev ? { ...prev, is_deploying: false } : prev);
+            setDeployLogs([`Error: ${e instanceof Error ? e.message : 'Network error'}`, 'Deployment failed']);
+        }
     };
 
     const handleTerminalCommand = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (role === 'guest') return;
         if (e.key === 'Enter' && termInput.trim()) {
             const cmd = termInput.trim();
             setTermInput('');
@@ -605,7 +722,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ command: cmd })
                 });
-            } catch (err) { }
+            } catch { /* ignore error */ }
         }
     };
 
@@ -706,7 +823,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                         </defs>
                                         {isActive && <Tooltip isAnimationActive={false} contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: any) => { const s = formatSpeed(value); return [`${s.value} ${s.unit}`, 'Disk I/O']; }} />}
                                         <YAxis domain={[0, 'auto']} hide={true} />
-                                        <Area type="monotoneX" dataKey="diskRead" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorDiskIO)" animationDuration={300} />
+                                        <Area type="monotoneX" dataKey="diskIO" stroke="#f59e0b" strokeWidth={3} fillOpacity={1} fill="url(#colorDiskIO)" animationDuration={300} />
                                     </AreaChart>
                                 </ResponsiveContainer>
                             </div>
@@ -736,7 +853,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                         </defs>
                                         {isActive && <Tooltip isAnimationActive={false} contentStyle={{ background: '#1f2937', border: '1px solid var(--panel-border)', borderRadius: 0, color: '#fff', fontSize: '12px' }} formatter={(value: any) => { const s = formatSpeed(value); return [`${s.value} ${s.unit}`, 'Network']; }} />}
                                         <YAxis domain={[0, 'auto']} hide={true} />
-                                        <Area type="monotoneX" dataKey="netIn" stroke="#ec4899" strokeWidth={3} fillOpacity={1} fill="url(#colorNet)" animationDuration={300} />
+                                        <Area type="monotoneX" dataKey="netIO" stroke="#ec4899" strokeWidth={3} fillOpacity={1} fill="url(#colorNet)" animationDuration={300} />
                                     </AreaChart>
                                 </ResponsiveContainer>
                             </div>
@@ -752,9 +869,14 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     <div style={{ ...cardStyle }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                             <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Docker Container Status</h3>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                            <button disabled={role === "guest" || isDeploying} onClick={openInstallAllModal} title="Install Car, Foot, Nominatim and Pelias from the same OSM regions. Containers start only after all installations finish." style={{ background: 'rgba(16,185,129,0.1)', color: '#10b981', border: '1px solid rgba(16,185,129,0.3)', padding: '6px 12px', fontSize: '11px', fontWeight: 600, cursor: role === "guest" || isDeploying ? "not-allowed" : "pointer", opacity: role === "guest" || isDeploying ? 0.5 : 1, transition: 'all 0.2s', borderRadius: 0, display: 'flex', alignItems: 'center', gap: '6px' }} onMouseOver={e => { if (role !== "guest" && !isDeploying) e.currentTarget.style.background = 'rgba(16,185,129,0.2)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(16,185,129,0.1)' }}>
+                                <Layers size={12} /> Install All Engines
+                            </button>
                             <button disabled={role === "guest"} onClick={handleRemoveAllContainers} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '6px 12px', fontSize: '11px', fontWeight: 600, cursor: role === "guest" ? "not-allowed" : "pointer", opacity: role === "guest" ? 0.5 : 1, transition: 'all 0.2s', borderRadius: 0 }} onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)' }} onMouseOut={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)' }}>
                                 Remove All Instances
                             </button>
+                            </div>
 
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', flex: 1 }}>
@@ -776,7 +898,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                         <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Endpoint:</div>
-                                        <div style={{ fontSize: '12px', color: dockerStatus?.car === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.car === 'running' ? 'underline' : 'none', cursor: dockerStatus?.car === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.car === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.car_port || carPort}` : 'N/A'}</div>
+                                        {dockerStatus?.car === 'running' ? (
+                                            <a href={`http://${window.location.hostname}:${(dockerStatus as any)?.car_port || carPort}`} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#3b82f6', textDecoration: 'underline', cursor: 'pointer' }}>{`http://${window.location.hostname}:${(dockerStatus as any)?.car_port || carPort}`}</a>
+                                        ) : (
+                                            <span style={{ fontSize: '12px', color: '#d1d5db' }}>N/A</span>
+                                        )}
                                     </div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                                         Uptime: <span style={{ color: 'var(--text-primary)' }}>{dockerStatus?.car === 'running' ? formatUptime((dockerStatus as any)?.car_started_at) : 'N/A'}</span>
@@ -805,7 +931,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                         <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Endpoint:</div>
-                                        <div style={{ fontSize: '12px', color: dockerStatus?.foot === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.foot === 'running' ? 'underline' : 'none', cursor: dockerStatus?.foot === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.foot === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.foot_port || footPort}` : 'N/A'}</div>
+                                        {dockerStatus?.foot === 'running' ? (
+                                            <a href={`http://${window.location.hostname}:${(dockerStatus as any)?.foot_port || footPort}`} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#3b82f6', textDecoration: 'underline', cursor: 'pointer' }}>{`http://${window.location.hostname}:${(dockerStatus as any)?.foot_port || footPort}`}</a>
+                                        ) : (
+                                            <span style={{ fontSize: '12px', color: '#d1d5db' }}>N/A</span>
+                                        )}
                                     </div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                                         Uptime: <span style={{ color: 'var(--text-primary)' }}>{dockerStatus?.foot === 'running' ? formatUptime((dockerStatus as any)?.foot_started_at) : 'N/A'}</span>
@@ -834,7 +964,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                         <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Endpoint:</div>
-                                        <a href={dockerStatus?.nominatim === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.nominatim_port || nominatimPort}/status` : '#'} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: dockerStatus?.nominatim === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.nominatim === 'running' ? 'underline' : 'none', cursor: dockerStatus?.nominatim === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.nominatim === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.nominatim_port || nominatimPort}/status` : 'N/A'}</a>
+                                        {dockerStatus?.nominatim === 'running' ? (
+                                            <a href={`http://${window.location.hostname}:${(dockerStatus as any)?.nominatim_port || nominatimPort}/status`} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#3b82f6', textDecoration: 'underline', cursor: 'pointer' }}>{`http://${window.location.hostname}:${(dockerStatus as any)?.nominatim_port || nominatimPort}/status`}</a>
+                                        ) : (
+                                            <span style={{ fontSize: '12px', color: '#d1d5db' }}>N/A</span>
+                                        )}
                                     </div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                                         Uptime: <span style={{ color: 'var(--text-primary)' }}>{dockerStatus?.nominatim === 'running' ? formatUptime((dockerStatus as any)?.nominatim_started_at) : 'N/A'}</span>
@@ -863,7 +997,11 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                         <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Endpoint:</div>
-                                        <div style={{ fontSize: '12px', color: dockerStatus?.pelias === 'running' ? '#3b82f6' : '#d1d5db', textDecoration: dockerStatus?.pelias === 'running' ? 'underline' : 'none', cursor: dockerStatus?.pelias === 'running' ? 'pointer' : 'default' }}>{dockerStatus?.pelias === 'running' ? `http://${window.location.hostname}:${(dockerStatus as any)?.pelias_port || peliasPort}` : 'N/A'}</div>
+                                        {dockerStatus?.pelias === 'running' ? (
+                                            <a href={`http://${window.location.hostname}:${(dockerStatus as any)?.pelias_port || peliasPort}/v1`} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#3b82f6', textDecoration: 'underline', cursor: 'pointer' }}>{`http://${window.location.hostname}:${(dockerStatus as any)?.pelias_port || peliasPort}/v1`}</a>
+                                        ) : (
+                                            <span style={{ fontSize: '12px', color: '#d1d5db' }}>N/A</span>
+                                        )}
                                     </div>
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                                         Uptime: <span style={{ color: 'var(--text-primary)' }}>{dockerStatus?.pelias === 'running' ? formatUptime((dockerStatus as any)?.pelias_started_at) : 'N/A'}</span>
@@ -893,39 +1031,42 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                                 viewMode === 'nominatim_logs' ? 'NOMINATIM LOGS' :
                                                     viewMode === 'pelias_logs' ? 'PELIAS LOGS' : 'CONSOLE'}
                                 </h3>
-                                {viewMode === 'deployment' && mergeStatus && (
+                                {viewMode === 'deployment' && (mergeStatus || isDeploying || deployLogs.some(l => l.includes('Deployment complete!') || l.includes('Deployment failed'))) && (
                                     (() => {
                                         let progress = 0;
+                                        let failedDeploy = false;
                                         for (let i = deployLogs.length - 1; i >= 0; i--) {
                                             const line = deployLogs[i].toLowerCase();
-                                            if (line.includes('deployment complete!')) { progress = 100; break; }
-                                            else if (line.includes('[cleanup]')) { progress = 98; break; }
-                                            else if (line.includes('rebuilding pelias')) { progress = 95; break; }
-                                            else if (line.includes('recreating nominatim') || line.includes('restarting nominatim')) { progress = 90; break; }
-                                            else if (line.includes('recreating osrm-foot container')) { progress = 90; break; }
-                                            else if (line.includes('recreating osrm-car container')) { progress = 85; break; }
-                                            else if (line.includes('running osrm customize for foot')) { progress = 80; break; }
-                                            else if (line.includes('running osrm partition for foot')) { progress = 75; break; }
-                                            else if (line.includes('running osrm extract for foot')) { progress = 70; break; }
-                                            else if (line.includes('running osrm customize for car')) { progress = 60; break; }
-                                            else if (line.includes('running osrm partition for car')) { progress = 55; break; }
-                                            else if (line.includes('running osrm extract for car')) { progress = 50; break; }
-                                            else if (line.includes('merging files') || line.includes('starting deployment')) { progress = 30; break; }
-                                            else if (line.includes('downloading')) { progress = 10; break; }
-                                            else if (line.includes('starting merge') || line.includes('initiated')) { progress = 5; break; }
+                                            if (line.includes('deployment failed') || line.includes('fatal deployment error')) { failedDeploy = true; break; }
+                                            else if (line.includes('deployment complete!')) { progress = 100; break; }
+                                            else if (line.includes('[cleanup]') || line.includes('[phase 3/3]')) { progress = 96; break; }
+                                            else if (line.includes('rebuilding pelias') || line.includes('--- [4/4] nominatim')) { progress = 82; break; }
+                                            else if (line.includes('recreating nominatim') || line.includes('restarting nominatim') || line.includes('--- [3/4] pelias')) { progress = 68; break; }
+                                            else if (line.includes('recreating osrm-foot container') || line.includes('started foot profile')) { progress = 88; break; }
+                                            else if (line.includes('recreating osrm-car container') || line.includes('started car profile')) { progress = 84; break; }
+                                            else if (line.includes('running osrm customize for foot')) { progress = 58; break; }
+                                            else if (line.includes('running osrm partition for foot')) { progress = 52; break; }
+                                            else if (line.includes('running osrm extract for foot') || line.includes('--- [2/4] foot')) { progress = 46; break; }
+                                            else if (line.includes('running osrm customize for car')) { progress = 40; break; }
+                                            else if (line.includes('running osrm partition for car')) { progress = 34; break; }
+                                            else if (line.includes('running osrm extract for car') || line.includes('--- [1/4] car') || line.includes('[phase 2/3]')) { progress = 28; break; }
+                                            else if (line.includes('merging') || line.includes('starting deployment') || line.includes('shared osm extract prepared')) { progress = 20; break; }
+                                            else if (line.includes('downloading') || line.includes('[phase 1/3]')) { progress = 10; break; }
+                                            else if (line.includes('starting merge') || line.includes('starting zero-downtime') || line.includes('[phase 0/3]') || line.includes('initiated')) { progress = 5; break; }
                                         }
 
+                                        const ringColor = failedDeploy ? '#ef4444' : '#10b981';
                                         const radius = 10;
                                         const circumference = 2 * Math.PI * radius;
-                                        const strokeDashoffset = circumference - (progress / 100) * circumference;
+                                        const strokeDashoffset = circumference - ((failedDeploy ? 100 : progress) / 100) * circumference;
 
                                         return (
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                 <svg width="24" height="24" viewBox="0 0 24 24" style={{ transform: 'rotate(-90deg)' }}>
                                                     <circle cx="12" cy="12" r={radius} stroke="var(--panel-inner-bg)" strokeWidth="3" fill="none" />
-                                                    <circle cx="12" cy="12" r={radius} stroke="#10b981" strokeWidth="3" fill="none" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} style={{ transition: 'stroke-dashoffset 0.5s ease-in-out', strokeLinecap: 'round' }} />
+                                                    <circle cx="12" cy="12" r={radius} stroke={ringColor} strokeWidth="3" fill="none" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} style={{ transition: 'stroke-dashoffset 0.5s ease-in-out', strokeLinecap: 'round' }} />
                                                 </svg>
-                                                <span style={{ fontSize: '12px', fontWeight: 700, color: '#10b981' }}>{progress}%</span>
+                                                <span style={{ fontSize: '12px', fontWeight: 700, color: ringColor }}>{failedDeploy ? 'Failed' : `${progress}%`}</span>
                                             </div>
                                         );
                                     })()
@@ -970,11 +1111,29 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                         >
                             {viewMode === 'traffic' ? (
                                 apiCalls.length === 0 ? <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>Listening for API traffic...</div> :
-                                    apiCalls.map((call, idx) => (
-                                        <div key={idx} style={{ marginBottom: '6px', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-                                            <span style={{ color: 'var(--text-secondary)' }}>[{call.timestamp}]</span> GET /route/v1/{call.profile}/{call.path.substring(0, 50)}... <span style={{ color: '#10b981', fontWeight: 600 }}>200 OK</span> <span style={{ color: 'var(--text-secondary)' }}>({call.latency})</span>
-                                        </div>
-                                    ))
+                                    apiCalls.map((call, idx) => {
+                                        const rawPath = String(call.path || '');
+                                        const shortPath = rawPath.length > 60 ? `${rawPath.substring(0, 60)}...` : rawPath;
+                                        const svc = call.service || 'route';
+                                        const reqDisplay = call.profile === 'pelias'
+                                            ? (rawPath.startsWith('/') ? shortPath : `/v1/${svc}?text=${shortPath}`)
+                                            : call.profile === 'nominatim'
+                                            ? `/${svc}?q=${shortPath}`
+                                            : `/${svc}/v1/${call.profile === 'foot' ? 'foot' : 'driving'}/${shortPath}`;
+                                        const statusCode = Number(call.status || 200);
+                                        const isError = statusCode >= 400;
+                                        return (
+                                            <div key={idx} style={{ marginBottom: '6px', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
+                                                <span style={{ color: 'var(--text-secondary)' }}>[{call.timestamp}]</span>{' '}
+                                                <span style={{ color: '#60a5fa', fontWeight: 600 }}>[{String(call.profile || 'osrm').toUpperCase()}]</span>{' '}
+                                                GET {reqDisplay}{' '}
+                                                <span style={{ color: isError ? '#ef4444' : '#10b981', fontWeight: 600 }}>
+                                                    {statusCode} {isError ? 'ERR' : 'OK'}
+                                                </span>{' '}
+                                                <span style={{ color: 'var(--text-secondary)' }}>({call.latency || 'N/A'})</span>
+                                            </div>
+                                        );
+                                    })
                             ) : viewMode === 'car_logs' ? (
                                 carLogs.length === 0 ? <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>Waiting for car logs...</div> :
                                     carLogs.map((logLine, idx) => (
@@ -1037,7 +1196,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }}>
                         <div style={{ background: 'var(--panel-bg)', width: '800px', maxWidth: '90vw', maxHeight: '90vh', border: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column' }}>
                             <div style={{ padding: '20px', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <h2 style={{ fontSize: '18px', fontWeight: 600, color: 'white', margin: 0, textTransform: 'capitalize' }}>Configure {modalTab}</h2>
+                                <h2 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)', margin: 0, textTransform: modalTab === 'all' ? 'none' : 'capitalize' }}>{modalTab === 'all' ? 'Install All Engines (Car, Foot, Nominatim, Pelias)' : `Configure ${modalTab}`}</h2>
                                 <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '18px' }}>X</button>
                             </div>
 
@@ -1111,7 +1270,7 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                         </div>
                                         <div style={{ background: 'var(--panel-inner-bg)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--panel-border)', width: '260px' }}>
                                             <Search size={14} color="#6b7280" />
-                                            <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search planet, continent, country, state..." style={{ background: 'transparent', border: 'none', color: 'white', width: '100%', outline: 'none', fontSize: '12px' }} />
+                                            <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search planet, continent, country, state..." style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', width: '100%', outline: 'none', fontSize: '12px' }} />
                                         </div>
                                     </div>
 
@@ -1163,12 +1322,12 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                                     key={state.id}
                                                     onClick={() => toggleState(state.id)}
                                                     style={{
-                                                        background: isSelected ? activeBg : isPlanet ? 'rgba(16,185,129,0.04)' : 'rgba(255,255,255,0.02)',
-                                                        border: `1px solid ${isSelected ? activeColor : isPlanet ? 'rgba(16,185,129,0.3)' : 'var(--panel-inner-bg)'}`,
+                                                        background: isSelected ? activeBg : isPlanet ? 'rgba(16,185,129,0.04)' : 'var(--panel-inner-bg)',
+                                                        border: `1px solid ${isSelected ? activeColor : isPlanet ? 'rgba(16,185,129,0.3)' : 'var(--panel-border)'}`,
                                                         padding: '10px 12px',
-                                                        cursor: 'pointer',
+                                                        cursor: role === 'guest' ? 'not-allowed' : 'pointer',
                                                         fontSize: '12px',
-                                                        color: isSelected ? activeColor : '#d1d5db',
+                                                        color: isSelected ? activeColor : 'var(--text-primary)',
                                                         display: 'flex',
                                                         justifyContent: 'space-between',
                                                         alignItems: 'center',
@@ -1198,6 +1357,24 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
 
                                 <div style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '24px', marginTop: '24px', flexShrink: 0 }}>
                                     <h3 style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0, marginBottom: '16px' }}>2. Network Ports</h3>
+                                    {modalTab === 'all' ? (
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                                            {(['car', 'foot', 'nominatim', 'pelias'] as const).map(p => (
+                                                <div key={p}>
+                                                    <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'capitalize' }}>{p} Port</label>
+                                                    <input
+                                                        type="text"
+                                                        inputMode="numeric"
+                                                        pattern="[0-9]*"
+                                                        value={allPorts[p]}
+                                                        onChange={e => { const v = e.target.value.replace(/\D/g, ''); setAllPorts(prev => ({ ...prev, [p]: v })); }}
+                                                        placeholder={p === 'car' ? '5001' : p === 'foot' ? '5005' : p === 'nominatim' ? '5003' : '5002'}
+                                                        style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'var(--text-primary)', padding: '10px 12px', outline: 'none' }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
                                     <div style={{ display: 'flex', gap: '16px' }}>
                                         <div style={{ flex: 1 }}>
                                             <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
@@ -1210,20 +1387,52 @@ export default function EngineSetup({ isActive = true }: { isActive?: boolean })
                                                 value={modalPort}
                                                 onChange={e => setModalPort(e.target.value.replace(/\D/g, ''))}
                                                 placeholder={modalTab === 'car' ? '5001' : modalTab === 'foot' ? '5005' : modalTab === 'nominatim' ? '5003' : '5002'}
-                                                style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'white', padding: '10px 12px', outline: 'none' }}
+                                                style={{ width: '100%', background: 'var(--panel-inner-bg)', border: '1px solid var(--panel-border)', color: 'var(--text-primary)', padding: '10px 12px', outline: 'none' }}
                                             />
                                         </div>
                                     </div>
+                                    )}
                                 </div>
 
                             </div>
 
                             <div style={{ padding: '20px', borderTop: '1px solid var(--panel-border)', background: 'rgba(239,68,68,0.05)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                {(() => {
-                                    const hasAnySelection = (selectedStates[modalTab]?.length || 0) > 0;
-                                    const isBtnDisabled = role === "guest" || !hasAnySelection;
+                                {modalTab === 'all' ? (() => {
+                                    const portValidationError = getPortsValidationError(allPorts);
+                                    const isBtnDisabled = role === "guest" || (selectedStates.all?.length || 0) === 0 || Boolean(portValidationError);
                                     return (
                                         <>
+                                            {portValidationError && (
+                                                <div style={{ fontSize: '12px', color: '#ef4444', fontWeight: 600 }}>
+                                                    {portValidationError}
+                                                </div>
+                                            )}
+                                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                                The selected OSM data is downloaded once and used to install all 4 engines one after another. Existing engine containers are removed first, and no engine container is started until every installation has finished.
+                                            </div>
+                                            <button disabled={isBtnDisabled} onClick={handleInstallAll} style={{ width: '100%', background: 'rgba(16,185,129,0.2)', color: '#10b981', border: '1px solid rgba(16,185,129,0.3)', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: isBtnDisabled ? "not-allowed" : "pointer", opacity: isBtnDisabled ? 0.5 : 1, transition: 'all 0.2s' }} onMouseOver={e => { if (!isBtnDisabled) e.currentTarget.style.background = 'rgba(16,185,129,0.3)' }} onMouseOut={e => { if (!isBtnDisabled) e.currentTarget.style.background = 'rgba(16,185,129,0.2)' }}>
+                                                <Layers size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px', marginTop: '-2px' }} />
+                                                Install All 4 Engines (Fresh Setup)
+                                            </button>
+                                        </>
+                                    );
+                                })() : (() => {
+                                    const hasAnySelection = (selectedStates[modalTab]?.length || 0) > 0;
+                                    const candidatePorts = {
+                                        car: modalTab === 'car' ? modalPort : (carPort || 5001),
+                                        foot: modalTab === 'foot' ? modalPort : (footPort || 5005),
+                                        nominatim: modalTab === 'nominatim' ? modalPort : (nominatimPort || 5003),
+                                        pelias: modalTab === 'pelias' ? modalPort : (peliasPort || 5002),
+                                    };
+                                    const portValidationError = getPortsValidationError(candidatePorts);
+                                    const isBtnDisabled = role === "guest" || !hasAnySelection || Boolean(portValidationError);
+                                    return (
+                                        <>
+                                            {portValidationError && (
+                                                <div style={{ fontSize: '12px', color: '#ef4444', fontWeight: 600 }}>
+                                                    {portValidationError}
+                                                </div>
+                                            )}
                                             <button disabled={isBtnDisabled} onClick={handleUpdate} style={{ width: '100%', background: 'rgba(16,185,129,0.2)', color: '#10b981', border: '1px solid rgba(16,185,129,0.3)', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: isBtnDisabled ? "not-allowed" : "pointer", opacity: isBtnDisabled ? 0.5 : 1, transition: 'all 0.2s' }} onMouseOver={e => { if (!isBtnDisabled) e.currentTarget.style.background = 'rgba(16,185,129,0.3)' }} onMouseOut={e => { if (!isBtnDisabled) e.currentTarget.style.background = 'rgba(16,185,129,0.2)' }}>
                                                 <AlertTriangle size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px', marginTop: '-2px' }} />
                                                 Update States (Zero Downtime)

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Map, Lock, User, ArrowRight, Key } from 'lucide-react';
 import packageJson from '../../package.json';
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -30,7 +32,7 @@ export default function Login() {
         const data = await res.json();
         setError(data.detail || 'Invalid username or password');
       }
-    } catch (err) {
+    } catch {
       setError('Unable to connect to the server');
     }
   };
@@ -53,7 +55,7 @@ export default function Login() {
         const data = await res.json();
         setError(data.detail || 'Invalid recovery code');
       }
-    } catch (err) {
+    } catch {
       setError('Unable to connect to the server');
     }
   };
@@ -197,7 +199,7 @@ export default function Login() {
         fontSize: '11px',
         background: 'rgba(0,0,0,0.3)'
       }}>
-        <span>&copy; {new Date().getFullYear()} IT Curves | GeoOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
+        <span>&copy; {CURRENT_YEAR} IT Curves | GeoOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
       </footer>
     </div>
   );

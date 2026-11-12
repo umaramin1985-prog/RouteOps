@@ -52,13 +52,16 @@ if command_exists docker; then
         # Aggressively remove any lingering routeops containers, images, and volumes
         docker rm -f $(docker ps -aq --filter name=routeops) 2>/dev/null || true
         docker rm -f $(docker ps -aq --filter name=osrm) 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter name=nominatim) 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter name=pelias) 2>/dev/null || true
         docker image rm -f $(docker images -q --filter reference="*routeops*") 2>/dev/null || true
         docker image rm -f $(docker images -q --filter reference="*osrm*") 2>/dev/null || true
         docker volume rm -f $(docker volume ls -q --filter name=routeops) 2>/dev/null || true
         docker volume rm -f $(docker volume ls -q --filter name=osrm) 2>/dev/null || true
+        docker volume rm -f nominatim-data pelias-data 2>/dev/null || true
         echo "[*] Cleaning up data folder and database..."
         sudo rm -rf data/* 2>/dev/null || true
-        sudo rm -f backend/osrm_portal.db 2>/dev/null || true
+        sudo rm -f backend/osrm_portal.db* 2>/dev/null || true
     fi
 else
     echo "[*] Installing Docker..."

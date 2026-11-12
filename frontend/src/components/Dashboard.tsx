@@ -6,8 +6,11 @@ import EngineSetup from './EngineSetup';
 import ActiveEdits from './ActiveEdits';
 import packageJson from '../../package.json';
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 export default function Dashboard() {
   const navigate = useNavigate();
+  const role = localStorage.getItem('role') || 'admin';
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [activeTab, setActiveTab] = useState(() => {
@@ -26,7 +29,7 @@ export default function Dashboard() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, nominatim?: string, pelias?: string, active_states?: string[] | Record<string, string[]>, is_deploying?: boolean } | null>(null);
+  const [dockerStatus, setDockerStatus] = useState<{ car: string, foot: string, nominatim?: string, pelias?: string, car_port?: number, foot_port?: number, nominatim_port?: number, pelias_port?: number, active_states?: string[] | Record<string, string[]>, is_deploying?: boolean } | null>(null);
   const [dbStatus, setDbStatus] = useState<string | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
@@ -51,7 +54,7 @@ export default function Dashboard() {
         const data = await res.json();
         setPasswordMsg(data.detail || 'Invalid old password');
       }
-    } catch (err) {
+    } catch {
       setPasswordMsg('Unable to connect to server');
     }
   };
@@ -69,7 +72,7 @@ export default function Dashboard() {
           const data = await res.json();
           setDockerStatus(data);
         }
-      } catch (e) { }
+      } catch { /* ignore transient poll error */ }
       try {
         const resDb = await fetch(`/api/system/db-status`);
         if (resDb.ok) {
@@ -78,7 +81,7 @@ export default function Dashboard() {
         } else {
           setDbStatus('disconnected');
         }
-      } catch (e) {
+      } catch {
         setDbStatus('disconnected');
       }
     };
@@ -175,19 +178,22 @@ export default function Dashboard() {
             >
               {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
             </button>
-            <button
-              onClick={() => {
-                setShowChangePassword(true);
-                setPasswordMsg('');
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
-              title="Change Password"
-            >
-              <Settings size={18} />
-            </button>
+            {role !== 'guest' && (
+              <button
+                onClick={() => {
+                  setShowChangePassword(true);
+                  setPasswordMsg('');
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
+                title="Change Password"
+              >
+                <Settings size={18} />
+              </button>
+            )}
             <button
               onClick={() => {
                 localStorage.removeItem('isAuthenticated');
+                localStorage.removeItem('role');
                 navigate('/');
               }}
               style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'Outfit' }}
@@ -208,12 +214,18 @@ export default function Dashboard() {
               position: 'absolute', top: '20px', right: '20px', zIndex: 1001,
               width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center',
               background: 'var(--panel-bg)', backdropFilter: 'blur(16px)', border: '1px solid var(--panel-border)',
-              color: 'white', borderRadius: 0, cursor: 'pointer', transition: 'all 0.2s',
+              color: 'var(--text-primary)', borderRadius: 0, cursor: 'pointer', transition: 'all 0.2s',
               boxShadow: '0 4px 15px rgba(0,0,0,0.3)'
             }}
             title={isFullScreen ? "Exit Full Screen" : "Full Screen"}
-            onMouseOver={(e) => e.currentTarget.style.background = 'var(--accent-color)'}
-            onMouseOut={(e) => e.currentTarget.style.background = 'var(--panel-bg)'}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = 'var(--accent-color)';
+              e.currentTarget.style.color = 'var(--btn-text)';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = 'var(--panel-bg)';
+              e.currentTarget.style.color = 'var(--text-primary)';
+            }}
           >
             {isFullScreen ? <Minimize size={20} /> : <Maximize size={20} />}
           </button>
@@ -265,7 +277,7 @@ export default function Dashboard() {
           fontSize: '0.85rem',
           color: 'var(--text-secondary)'
         }}>
-          <span>&copy; {new Date().getFullYear()} IT Curves | GeoOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
+          <span>&copy; {CURRENT_YEAR} IT Curves | GeoOps Admin. All rights reserved. &nbsp;|&nbsp; Version {packageJson.version}</span>
         </footer>
       )}
 

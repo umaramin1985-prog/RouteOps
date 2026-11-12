@@ -1,5 +1,3 @@
-version: '3.8'
-
 name: routeops-geocoding
 
 services:
@@ -16,10 +14,11 @@ services:
       # This tells Nominatim to automatically import this PBF on first run
       - PBF_PATH=/data/nominatim.osm.pbf
       - NOMINATIM_PASSWORD=super_secure_password
-      - REPLICATION_URL=https://planet.osm.org/replication/hour/
+      # Optional: set a matching Geofabrik/Planet replication URL only when enabling live diffs
+      # - REPLICATION_URL=https://planet.osm.org/replication/hour/
     volumes:
       - ./data:/data
-      - nominatim-data:/var/lib/postgresql/14/main
+      - nominatim-data:/var/lib/postgresql/16/main
     shm_size: 2g
 
   # ==========================================
@@ -54,7 +53,7 @@ services:
     container_name: pelias_api
     restart: always
     ports:
-      - "5002:4000"
+      - "5002:3100"
     environment:
       - PELIAS_CONFIG=/data/pelias.json
     volumes:

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Search,
   Navigation,
@@ -156,6 +156,13 @@ function MapFitter({ bounds }: { bounds: L.LatLngBounds | null }) {
   return null;
 }
 
+async function fetchActiveOverridesList(): Promise<any[]> {
+  const res = await fetch(`/api/overrides`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
 // ==========================================================================
 // Main MapDisplay Component
 // ==========================================================================
@@ -291,6 +298,7 @@ export default function MapDisplay({
     setStartSuggestions([]);
     setEndSuggestions([]);
     setStopSuggestions([]);
+    setAllRoutes([]);
     setRouteCoordinates([]);
     setAltRoutes([]);
     setMainRouteInfo(null);
@@ -334,48 +342,140 @@ export default function MapDisplay({
   };
 
   // Determine active profile states
-  const currentProfileStates = Array.isArray(dockerStatus?.active_states)
-    ? dockerStatus.active_states
-    : (dockerStatus?.active_states && typeof dockerStatus.active_states === 'object'
-      ? (dockerStatus.active_states[profile] || []).filter((s: string) => s !== 'all')
-      : activeStates);
-
-  useEffect(() => {
-    if (currentProfileStates && currentProfileStates.length > 0) {
-      if (!selectedState || !currentProfileStates.includes(selectedState)) {
-        const first = currentProfileStates[0];
-        setSelectedState(first);
-        const boundsData = (stateBounds as any)[first];
-        if (boundsData) {
-          setRouteBounds(L.latLngBounds([
-            [boundsData[0][0], boundsData[0][1]],
-            [boundsData[1][0], boundsData[1][1]]
-          ]));
-        }
-      }
+  const dockerActiveStates = dockerStatus?.active_states;
+  const currentProfileStates = useMemo<string[]>(() => {
+    if (Array.isArray(dockerActiveStates)) {
+      return dockerActiveStates;
     }
-  }, [currentProfileStates.join(','), selectedState]);
+    if (dockerActiveStates && typeof dockerActiveStates === 'object') {
+      return (dockerActiveStates[profile] || []).filter((s: string) => s !== 'all');
+    }
+    return activeStates;
+  }, [dockerActiveStates, profile, activeStates]);
 
-  // Fetch overrides on load
-  const fetchOverrides = async () => {
+  const effectiveSelectedState = useMemo(() => {
+    if (selectedState && currentProfileStates.includes(selectedState)) {
+      return selectedState;
+    }
+    return currentProfileStates[0] || '';
+  }, [currentProfileStates, selectedState]);
+
+  const lastAutoFittedStateRef = useRef<string>('');
+  useEffect(() => {
+    if (!effectiveSelectedState || effectiveSelectedState === lastAutoFittedStateRef.current) return;
+    lastAutoFittedStateRef.current = effectiveSelectedState;
+    const boundsData = (stateBounds as any)[effectiveSelectedState];
+    if (boundsData && mapInstanceRef.current) {
+      mapInstanceRef.current.fitBounds(
+        L.latLngBounds([
+          [boundsData[0][0], boundsData[0][1]],
+          [boundsData[1][0], boundsData[1][1]]
+        ]),
+        { padding: [60, 60] }
+      );
+    }
+  }, [effectiveSelectedState]);
+
+  // Fetch overrides helper
+  const fetchOverrides = useCallback(async () => {
     try {
-      const res = await fetch(`/api/overrides`, { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        setActiveOverrides(data);
-      }
+      const data = await fetchActiveOverridesList();
+      setActiveOverrides(data);
     } catch (err) {
       console.error('Failed to fetch overrides:', err);
     }
-  };
-
-  useEffect(() => {
-    fetchOverrides();
   }, []);
 
   useEffect(() => {
-    if (isActive) fetchOverrides();
+    let cancelled = false;
+    fetchActiveOverridesList()
+      .then((data) => {
+        if (!cancelled) setActiveOverrides(data);
+      })
+      .catch((err) => console.error('Failed to fetch overrides:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isActive) {
+      let cancelled = false;
+      fetchActiveOverridesList()
+        .then((data) => {
+          if (!cancelled) setActiveOverrides(data);
+        })
+        .catch((err) => console.error('Failed to fetch overrides:', err));
+      // Leaflet needs invalidateSize after becoming visible from a hidden tab
+      const timer = setTimeout(() => {
+        mapInstanceRef.current?.invalidateSize();
+      }, 60);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
+    }
   }, [isActive]);
+
+  useEffect(() => {
+    const handleEditRemoved = () => {
+      void fetchOverrides();
+    };
+    const handleMapGoto = (e: Event) => {
+      const ov = (e as CustomEvent)?.detail;
+      if (!ov) return;
+      void fetchOverrides();
+      setTimeout(() => {
+        const map = mapInstanceRef.current;
+        if (!map) return;
+        map.invalidateSize();
+        let targetLat: number | null = typeof ov.lat === 'number' ? ov.lat : null;
+        let targetLng: number | null = typeof ov.lng === 'number' ? ov.lng : null;
+        if (ov.geometry) {
+          try {
+            const pts: [number, number][] = JSON.parse(ov.geometry);
+            if (Array.isArray(pts) && pts.length > 0) {
+              targetLat = pts[0][0];
+              targetLng = pts[0][1];
+              if (pts.length > 1) {
+                map.fitBounds(L.polyline(pts).getBounds(), { padding: [80, 80], maxZoom: 17 });
+              } else {
+                map.flyTo([pts[0][0], pts[0][1]], 16, { duration: 0.8 });
+              }
+            }
+          } catch {
+            if (targetLat !== null && targetLng !== null) {
+              map.flyTo([targetLat, targetLng], 16, { duration: 0.8 });
+            }
+          }
+        } else if (targetLat !== null && targetLng !== null) {
+          map.flyTo([targetLat, targetLng], 16, { duration: 0.8 });
+        }
+        if (targetLat !== null && targetLng !== null) {
+          const speedLabel = ov.is_closed
+            ? 'Road Closed'
+            : `${Math.round((ov.speed_kmh || 0) * 0.621371)} mph (${Math.round(ov.speed_kmh || 0)} km/h)`;
+          setActivePlace({
+            title: ov.road_name || (ov.is_closed ? 'Road Closure' : 'Speed Override'),
+            subtitle: [speedLabel, ov.city_name, ov.reason].filter(Boolean).join(' • '),
+            lat: targetLat,
+            lng: targetLng
+          });
+        }
+      }, 80);
+    };
+    const handleResize = () => {
+      mapInstanceRef.current?.invalidateSize();
+    };
+    window.addEventListener('edit-removed', handleEditRemoved);
+    window.addEventListener('map-goto', handleMapGoto);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('edit-removed', handleEditRemoved);
+      window.removeEventListener('map-goto', handleMapGoto);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [fetchOverrides]);
 
   // Active Geocoding Engine computation (strictly local Pelias or Nominatim)
   const activeGeocoderName = (activeEngine === 'nominatim' || (activeEngine === 'osrm' && dockerStatus?.nominatim === 'running' && dockerStatus?.pelias !== 'running'))
@@ -386,8 +486,8 @@ export default function MapDisplay({
     ? 'Nominatim'
     : 'Local Geocoder';
 
-  const isGeocoderOnline = (activeGeocoderName === 'Pelias' && (dockerStatus?.pelias === 'running' || dockerStatus?.pelias_port)) ||
-    (activeGeocoderName === 'Nominatim' && (dockerStatus?.nominatim === 'running' || dockerStatus?.nominatim_port));
+  const isGeocoderOnline = (activeGeocoderName === 'Pelias' && dockerStatus?.pelias === 'running') ||
+    (activeGeocoderName === 'Nominatim' && dockerStatus?.nominatim === 'running');
 
   // ==========================================================================
   // Autocomplete Searches with Debounce
@@ -396,7 +496,6 @@ export default function MapDisplay({
   // Main search bar autocomplete
   useEffect(() => {
     if (!searchQuery.trim() || panelMode !== 'search') {
-      setSearchResults([]);
       return;
     }
     const timer = setTimeout(async () => {
@@ -411,7 +510,6 @@ export default function MapDisplay({
   // Start input autocomplete
   useEffect(() => {
     if (!startInputText.trim() || activeInputFocus !== 'start') {
-      setStartSuggestions([]);
       return;
     }
     const timer = setTimeout(async () => {
@@ -424,7 +522,6 @@ export default function MapDisplay({
   // End input autocomplete
   useEffect(() => {
     if (!endInputText.trim() || activeInputFocus !== 'end') {
-      setEndSuggestions([]);
       return;
     }
     const timer = setTimeout(async () => {
@@ -439,102 +536,29 @@ export default function MapDisplay({
     () => stops.find((s) => s.id === activeInputFocus),
     [stops, activeInputFocus]
   );
+  const activeFocusedStopText = activeFocusedStop?.text ?? '';
 
   useEffect(() => {
-    if (!activeFocusedStop || !activeFocusedStop.text.trim()) {
-      setStopSuggestions([]);
+    if (!activeFocusedStopText.trim()) {
       return;
     }
     const timer = setTimeout(async () => {
-      const results = await searchPlaces(activeFocusedStop.text, { dockerStatus, activeEngine });
+      const results = await searchPlaces(activeFocusedStopText, { dockerStatus, activeEngine });
       setStopSuggestions(results);
     }, 280);
     return () => clearTimeout(timer);
-  }, [activeFocusedStop?.text, activeEngine, dockerStatus]);
+  }, [activeFocusedStopText, activeEngine, dockerStatus]);
+
+  const visibleSearchResults = panelMode === 'search' && searchQuery.trim() ? searchResults : [];
+  const visibleStartSuggestions = activeInputFocus === 'start' && startInputText.trim() ? startSuggestions : [];
+  const visibleEndSuggestions = activeInputFocus === 'end' && endInputText.trim() ? endSuggestions : [];
+  const visibleStopSuggestions = activeFocusedStop && activeFocusedStopText.trim() ? stopSuggestions : [];
 
   // ==========================================================================
   // OSRM Multi-Stop Route Calculation
   // ==========================================================================
 
-  const fetchRoute = () => {
-    const validPoints: L.LatLng[] = [];
-    if (startPoint) validPoints.push(startPoint);
-    for (const s of stops) {
-      if (s.point) validPoints.push(s.point);
-    }
-    if (endPoint) validPoints.push(endPoint);
-
-    if (validPoints.length < 2) return;
-
-    const port = profile === 'car' ? (dockerStatus?.car_port || 5001) : (dockerStatus?.foot_port || 5005);
-    const profileName = profile === 'car' ? 'driving' : 'foot';
-    // OSRM only generates alternative routes for 2-waypoint queries
-    const altsParam = (validPoints.length === 2 && (showAlternatives || routePreference === 'shortest')) ? '3' : 'false';
-
-    const coordsStr = validPoints.map((p) => `${p.lng},${p.lat}`).join(';');
-    let url = `http://${window.location.hostname}:${port}/route/v1/${profileName}/${coordsStr}?overview=full&geometries=geojson&annotations=nodes,speed&steps=true&alternatives=${altsParam}`;
-    if (avoidTolls && profile === 'car') {
-      url += '&exclude=toll';
-    }
-    setRawRequestUrl(url);
-
-    fetch(url)
-      .then((res) => res.json())
-      .then((data) => {
-        setRawJson(data);
-        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-          // Snap validation on endpoints
-          const snapStart = L.latLng(data.waypoints[0].location[1], data.waypoints[0].location[0]);
-          const snapEnd = L.latLng(data.waypoints[data.waypoints.length - 1].location[1], data.waypoints[data.waypoints.length - 1].location[0]);
-
-          if (startPoint && startPoint.distanceTo(snapStart) > 3000) {
-            setRouteError('Start point dropped outside installed OSRM region.');
-            setRouteCoordinates([]);
-            setAltRoutes([]);
-            setMainRouteInfo(null);
-            return;
-          }
-          if (endPoint && endPoint.distanceTo(snapEnd) > 3000) {
-            setRouteError('Destination dropped outside installed OSRM region.');
-            setRouteCoordinates([]);
-            setAltRoutes([]);
-            setMainRouteInfo(null);
-            return;
-          }
-
-          setRouteError(null);
-          setAllRoutes(data.routes);
-
-          let primaryIdx = 0;
-          if (routePreference === 'shortest') {
-            let minDistance = Infinity;
-            data.routes.forEach((r: any, idx: number) => {
-              if (r.distance < minDistance) {
-                minDistance = r.distance;
-                primaryIdx = idx;
-              }
-            });
-          }
-          applySelectedRoute(data.routes, primaryIdx);
-        } else {
-          setRouteCoordinates([]);
-          setAltRoutes([]);
-          setMainRouteInfo(null);
-          setRouteNodes([]);
-          setRouteSteps([]);
-          setRouteError(data.message || 'No route found between these points.');
-        }
-      })
-      .catch((err) => {
-        console.error('OSRM route error:', err);
-        setRouteCoordinates([]);
-        setAltRoutes([]);
-        setMainRouteInfo(null);
-        setRouteError('Failed to connect to OSRM routing engine.');
-      });
-  };
-
-  const applySelectedRoute = (routesList: any[], primaryIndex: number) => {
+  const applySelectedRoute = useCallback((routesList: any[], primaryIndex: number) => {
     setSelectedRouteIndex(primaryIndex);
     const primaryRoute = routesList[primaryIndex];
     const coords: [number, number][] = primaryRoute.geometry.coordinates.map((c: number[]) => [c[1], c[0]]);
@@ -574,43 +598,145 @@ export default function MapDisplay({
       setRouteBounds(L.polyline(coords).getBounds());
     }
 
-    // Flatten turn-by-turn steps across all route legs
+    // Flatten turn-by-turn steps and OSM node annotations across all route legs
     if (primaryRoute.legs) {
       const allLegSteps = primaryRoute.legs.flatMap((leg: any) => leg.steps || []);
       setRouteSteps(allLegSteps);
 
+      const nonArriveSteps = allLegSteps.filter((s: any) => s.maneuver?.type !== 'arrive');
       const roadNames = new Set(
-        allLegSteps.slice(0, -1)
+        nonArriveSteps
           .map((s: any) => s.name || s.ref || '')
           .filter((name: string) => name && name.toLowerCase() !== 'unnamed')
       );
-      setIsSameRoad(roadNames.size <= 1);
+      const sameRoad = 'max_speed' in primaryRoute
+        ? true
+        : (roadNames.size === 1 || (roadNames.size === 0 && nonArriveSteps.length <= 1));
+      setIsSameRoad(sameRoad);
       if (roadNames.size > 0) {
         setRoadName(Array.from(roadNames)[0] as string);
       } else {
         setRoadName('');
       }
 
-      if (primaryRoute.legs[0]?.annotation) {
-        if (primaryRoute.legs[0].annotation.nodes) {
-          setRouteNodes(primaryRoute.legs[0].annotation.nodes);
-        }
-        if (primaryRoute.legs[0].annotation.speed && primaryRoute.legs[0].annotation.speed.length > 0) {
-          const speedMs = primaryRoute.legs[0].annotation.speed[0];
-          const speedMph = Math.round(speedMs * 2.23694);
-          setNewSpeed(speedMph);
-          setBackSpeed(speedMph);
+      const mergedNodes: number[] = [];
+      for (const leg of primaryRoute.legs) {
+        const legNodes: number[] | undefined = leg?.annotation?.nodes;
+        if (Array.isArray(legNodes)) {
+          for (const n of legNodes) {
+            if (mergedNodes.length === 0 || mergedNodes[mergedNodes.length - 1] !== n) {
+              mergedNodes.push(n);
+            }
+          }
         }
       }
+      setRouteNodes(mergedNodes);
+
+      const firstSpeedMs = primaryRoute.legs[0]?.annotation?.speed?.[0];
+      if (typeof firstSpeedMs === 'number' && firstSpeedMs > 0) {
+        const speedMph = Math.max(1, Math.min(200, Math.round(firstSpeedMs * 2.23694) || 30));
+        setNewSpeed(speedMph);
+        setBackSpeed(speedMph);
+      }
     }
-  };
+  }, [showAlternatives]);
+
+  const fetchRoute = useCallback(async (signal?: AbortSignal) => {
+    const validPoints: L.LatLng[] = [];
+    if (startPoint) validPoints.push(startPoint);
+    for (const s of stops) {
+      if (s.point) validPoints.push(s.point);
+    }
+    if (endPoint) validPoints.push(endPoint);
+
+    if (validPoints.length < 2) return;
+
+    const port = profile === 'car' ? (dockerStatus?.car_port || 5001) : (dockerStatus?.foot_port || 5005);
+    const profileName = profile === 'car' ? 'driving' : 'foot';
+    // OSRM only generates alternative routes for 2-waypoint queries
+    const altsParam = (validPoints.length === 2 && (showAlternatives || routePreference === 'shortest')) ? '3' : 'false';
+
+    const coordsStr = validPoints.map((p) => `${p.lng},${p.lat}`).join(';');
+    let url = `http://${window.location.hostname}:${port}/route/v1/${profileName}/${coordsStr}?overview=full&geometries=geojson&annotations=nodes,speed&steps=true&alternatives=${altsParam}`;
+    if (avoidTolls && profile === 'car') {
+      url += '&exclude=toll';
+    }
+
+    try {
+      const res = await fetch(url, signal ? { signal } : undefined);
+      const data = await res.json();
+      if (signal?.aborted) return;
+      setRawRequestUrl(url);
+      setRawJson(data);
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        // Snap validation on endpoints
+        const snapStart = L.latLng(data.waypoints[0].location[1], data.waypoints[0].location[0]);
+        const snapEnd = L.latLng(data.waypoints[data.waypoints.length - 1].location[1], data.waypoints[data.waypoints.length - 1].location[0]);
+
+        if (startPoint && startPoint.distanceTo(snapStart) > 3000) {
+          setRouteError('Start point dropped outside installed OSRM region.');
+          setAllRoutes([]);
+          setRouteCoordinates([]);
+          setAltRoutes([]);
+          setMainRouteInfo(null);
+          return;
+        }
+        if (endPoint && endPoint.distanceTo(snapEnd) > 3000) {
+          setRouteError('Destination dropped outside installed OSRM region.');
+          setAllRoutes([]);
+          setRouteCoordinates([]);
+          setAltRoutes([]);
+          setMainRouteInfo(null);
+          return;
+        }
+
+        setRouteError(null);
+        setAllRoutes(data.routes);
+
+        let primaryIdx = 0;
+        if (routePreference === 'shortest') {
+          let minDistance = Infinity;
+          data.routes.forEach((r: any, idx: number) => {
+            if (r.distance < minDistance) {
+              minDistance = r.distance;
+              primaryIdx = idx;
+            }
+          });
+        }
+        applySelectedRoute(data.routes, primaryIdx);
+      } else {
+        setAllRoutes([]);
+        setRouteCoordinates([]);
+        setAltRoutes([]);
+        setMainRouteInfo(null);
+        setRouteNodes([]);
+        setRouteSteps([]);
+        setRouteError(data.message || 'No route found between these points.');
+      }
+    } catch (err) {
+      if (signal?.aborted) return;
+      console.error('OSRM route error:', err);
+      setRawRequestUrl(url);
+      setAllRoutes([]);
+      setRouteCoordinates([]);
+      setAltRoutes([]);
+      setMainRouteInfo(null);
+      setRouteError('Failed to connect to OSRM routing engine.');
+    }
+  }, [startPoint, stops, endPoint, profile, dockerStatus?.car_port, dockerStatus?.foot_port, showAlternatives, routePreference, avoidTolls, applySelectedRoute]);
 
   useEffect(() => {
     const validPoints = [startPoint, ...stops.map((s) => s.point), endPoint].filter(Boolean);
-    if (validPoints.length >= 2) {
-      fetchRoute();
-    }
-  }, [startPoint, endPoint, stops, profile, showAlternatives, avoidTolls, routePreference]);
+    if (validPoints.length < 2) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void fetchRoute(controller.signal);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [startPoint, stops, endPoint, fetchRoute]);
 
   // ==========================================================================
   // Map Interaction Handlers (Draggable Markers & Context Menu)
@@ -747,13 +873,15 @@ export default function MapDisplay({
     const to_node = '';
     const editLat = routeCoordinates[0][0];
     const editLng = routeCoordinates[0][1];
+    const safeForwardMph = Math.max(1, Math.min(200, Number(newSpeed) || 1));
+    const safeBackwardMph = Math.max(1, Math.min(200, Number(backSpeed) || 1));
     const edits: any[] = [];
 
     if (isBidirectional) {
       edits.push({
         from_node,
         to_node,
-        speed_kmh: isClosing ? 0 : Math.round(newSpeed * 1.60934),
+        speed_kmh: isClosing ? 0 : Math.max(2, Math.round(safeForwardMph * 1.60934)),
         is_closed: isClosing,
         is_bidirectional: true,
         reason: editReason.trim(),
@@ -767,7 +895,7 @@ export default function MapDisplay({
       edits.push({
         from_node,
         to_node,
-        speed_kmh: isClosing ? 0 : Math.round(newSpeed * 1.60934),
+        speed_kmh: isClosing ? 0 : Math.max(2, Math.round(safeForwardMph * 1.60934)),
         is_closed: isClosing,
         is_bidirectional: false,
         reason: `[Forward] ${editReason.trim()}`,
@@ -780,7 +908,7 @@ export default function MapDisplay({
       edits.push({
         from_node: [...routeNodes].reverse().join(','),
         to_node: '',
-        speed_kmh: isBackClosing ? 0 : Math.round(backSpeed * 1.60934),
+        speed_kmh: isBackClosing ? 0 : Math.max(2, Math.round(safeBackwardMph * 1.60934)),
         is_closed: isBackClosing,
         is_bidirectional: false,
         reason: `[Backward] ${editReason.trim()}`,
@@ -793,18 +921,25 @@ export default function MapDisplay({
     }
 
     try {
-      for (const payload of edits) {
-        await fetch(`/api/overrides`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+      const res = edits.length > 1
+        ? await fetch(`/api/overrides/bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(edits)
+          })
+        : await fetch(`/api/overrides`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(edits[0])
+          });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
       showToast('Road edit applied! Rebuilding routing graph...');
       setEditReason('');
-      fetchOverrides();
+      void fetchOverrides();
       window.dispatchEvent(new Event('edit-applied'));
-      setTimeout(fetchRoute, 3000);
+      setTimeout(() => { void fetchRoute(); }, 3000);
     } catch {
       showToast('Failed to apply road edit.');
     }
@@ -902,10 +1037,10 @@ export default function MapDisplay({
         )}
 
         {/* Selected State Boundary Highlight */}
-        {selectedState && (
+        {effectiveSelectedState && (
           <GeoJSON
-            key={`geojson-${selectedState}`}
-            data={(usStatesGeoJson as any).features.filter((f: any) => f.properties.name.toLowerCase().replace(/ /g, '-') === selectedState)}
+            key={`geojson-${effectiveSelectedState}`}
+            data={(usStatesGeoJson as any).features.filter((f: any) => f.properties.name.toLowerCase().replace(/ /g, '-') === effectiveSelectedState)}
             style={{ color: '#1a73e8', fillOpacity: 0.04, weight: 2, dashArray: '4, 8' }}
           />
         )}
@@ -1235,6 +1370,7 @@ export default function MapDisplay({
                       onClick={() => {
                         setStartPoint(null);
                         setStartInputText('');
+                        setAllRoutes([]);
                         setRouteCoordinates([]);
                         setAltRoutes([]);
                         setMainRouteInfo(null);
@@ -1316,6 +1452,7 @@ export default function MapDisplay({
                       onClick={() => {
                         setEndPoint(null);
                         setEndInputText('');
+                        setAllRoutes([]);
                         setRouteCoordinates([]);
                         setAltRoutes([]);
                         setMainRouteInfo(null);
@@ -1451,78 +1588,74 @@ export default function MapDisplay({
                 }}
                 className="custom-scrollbar"
               >
-                {/* Primary Route Card */}
-                <div
-                  className={`gmaps-route-card ${selectedRouteIndex === 0 ? 'selected' : ''}`}
-                  style={{ margin: '8px 12px 4px 12px' }}
-                  onClick={() => applySelectedRoute(allRoutes, 0)}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                        <span style={{ fontSize: '20px', fontWeight: 700, color: 'var(--gmaps-green)' }}>
-                          {mainRouteInfo.duration}
-                        </span>
-                        <span style={{ fontSize: '13px', color: 'var(--gmaps-subtext)' }}>
-                          ({mainRouteInfo.distance})
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--gmaps-text)', marginTop: '2px', fontWeight: 500 }}>
-                        {stops.length > 0 ? `${stops.length + 1} legs route` : 'Fastest route'} &bull; via {mainRouteInfo.via}
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowSteps(!showSteps);
-                      }}
-                      style={{
-                        padding: '4px 10px',
-                        borderRadius: '16px',
-                        border: '1px solid var(--gmaps-border)',
-                        background: showSteps ? 'var(--gmaps-blue)' : 'transparent',
-                        color: showSteps ? '#ffffff' : 'var(--gmaps-text)',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                      }}
+                {/* Route Cards (rendered in stable index order so selecting any route highlights cleanly) */}
+                {(stops.length === 0 && showAlternatives && allRoutes.length > 0
+                  ? allRoutes.map((r: any, idx: number) => ({ route: r, idx }))
+                  : allRoutes[selectedRouteIndex]
+                  ? [{ route: allRoutes[selectedRouteIndex], idx: selectedRouteIndex }]
+                  : []
+                ).map(({ route: r, idx }, listIdx) => {
+                  const isSelected = idx === selectedRouteIndex;
+                  const distStr = `${(r.distance / 1609.34).toFixed(1)} mi`;
+                  const durStr = `${Math.ceil(r.duration / 60)} min`;
+                  const viaStr = r.legs?.[0]?.steps?.find((s: any) => s.name && s.name.length > 2)?.name || (idx === 0 ? 'Fastest Route' : 'Alternate');
+                  const labelPrefix = stops.length > 0
+                    ? `${stops.length + 1} legs route`
+                    : idx === 0
+                    ? 'Fastest route'
+                    : `Route ${idx + 1}`;
+                  return (
+                    <div
+                      key={`card-route-${idx}`}
+                      className={`gmaps-route-card ${isSelected ? 'selected' : ''}`}
+                      style={{ margin: listIdx === 0 ? '8px 12px 4px 12px' : '4px 12px' }}
+                      onClick={() => applySelectedRoute(allRoutes, idx)}
                     >
-                      {showSteps ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                      Details
-                    </button>
-                  </div>
-                </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isSelected ? 'flex-start' : 'center' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                            <span style={{ fontSize: isSelected ? '20px' : '15px', fontWeight: isSelected ? 700 : 600, color: isSelected ? 'var(--gmaps-green)' : 'var(--gmaps-text)' }}>
+                              {durStr}
+                            </span>
+                            <span style={{ fontSize: isSelected ? '13px' : '12px', color: 'var(--gmaps-subtext)' }}>
+                              ({distStr})
+                            </span>
+                          </div>
+                          <div style={{ fontSize: isSelected ? '12px' : '11px', color: isSelected ? 'var(--gmaps-text)' : 'var(--gmaps-subtext)', marginTop: isSelected ? '2px' : '1px', fontWeight: isSelected ? 500 : 400 }}>
+                            {labelPrefix} &bull; via {viaStr}
+                          </div>
+                        </div>
 
-                {/* Alternative Routes Cards (shown when no intermediate stops) */}
-                {stops.length === 0 && altRoutes.map((alt) => (
-                  <div
-                    key={`card-alt-${alt.index}`}
-                    className={`gmaps-route-card ${selectedRouteIndex === alt.index ? 'selected' : ''}`}
-                    style={{ margin: '4px 12px' }}
-                    onClick={() => applySelectedRoute(allRoutes, alt.index)}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                          <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--gmaps-text)' }}>
-                            {alt.duration}
-                          </span>
-                          <span style={{ fontSize: '12px', color: 'var(--gmaps-subtext)' }}>
-                            ({alt.distance})
-                          </span>
-                        </div>
-                        <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', marginTop: '1px' }}>
-                          via {alt.via}
-                        </div>
+                        {isSelected ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowSteps(!showSteps);
+                            }}
+                            style={{
+                              padding: '4px 10px',
+                              borderRadius: '16px',
+                              border: '1px solid var(--gmaps-border)',
+                              background: showSteps ? 'var(--gmaps-blue)' : 'transparent',
+                              color: showSteps ? '#ffffff' : 'var(--gmaps-text)',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            {showSteps ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                            Details
+                          </button>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: 'var(--gmaps-blue)', fontWeight: 600 }}>Select</span>
+                        )}
                       </div>
-                      <span style={{ fontSize: '11px', color: 'var(--gmaps-blue)', fontWeight: 600 }}>Select</span>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {/* Turn-by-Turn Navigation List */}
                 {showSteps && routeSteps.length > 0 && (
@@ -1655,10 +1788,10 @@ export default function MapDisplay({
         )}
 
         {/* Autocomplete Dropdown List */}
-        {((panelMode === 'search' && (searchResults.length > 0 || (searchQuery.trim().length > 1 && !isSearching && activeInputFocus === 'search'))) ||
-          (activeInputFocus === 'start' && startSuggestions.length > 0) ||
-          (activeInputFocus === 'end' && endSuggestions.length > 0) ||
-          (activeInputFocus?.startsWith('stop-') && stopSuggestions.length > 0)) && (
+        {((panelMode === 'search' && (visibleSearchResults.length > 0 || (searchQuery.trim().length > 1 && !isSearching && activeInputFocus === 'search'))) ||
+          (activeInputFocus === 'start' && visibleStartSuggestions.length > 0) ||
+          (activeInputFocus === 'end' && visibleEndSuggestions.length > 0) ||
+          (activeInputFocus?.startsWith('stop-') && visibleStopSuggestions.length > 0)) && (
           <div
             className="gmaps-card animate-fade-in"
             style={{
@@ -1667,18 +1800,18 @@ export default function MapDisplay({
               overflowY: 'auto'
             }}
           >
-            {panelMode === 'search' && searchResults.length === 0 && !isSearching && searchQuery.trim().length > 1 && activeInputFocus === 'search' ? (
+            {panelMode === 'search' && visibleSearchResults.length === 0 && !isSearching && searchQuery.trim().length > 1 && activeInputFocus === 'search' ? (
               <div style={{ padding: '12px 16px', fontSize: '12px', color: 'var(--gmaps-subtext)', textAlign: 'center' }}>
                 No places found in installed <strong style={{ color: 'var(--gmaps-text)' }}>{activeGeocoderName}</strong> for &ldquo;{searchQuery}&rdquo;.
               </div>
             ) : (
               (activeInputFocus === 'start'
-                ? startSuggestions
+                ? visibleStartSuggestions
                 : activeInputFocus === 'end'
-                ? endSuggestions
+                ? visibleEndSuggestions
                 : activeInputFocus?.startsWith('stop-')
-                ? stopSuggestions
-                : searchResults
+                ? visibleStopSuggestions
+                : visibleSearchResults
               ).map((item) => (
               <div
                 key={item.id}
@@ -1751,9 +1884,11 @@ export default function MapDisplay({
                 <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--gmaps-text)' }}>
                   {activePlace.title}
                 </div>
-                <div style={{ fontSize: '12px', color: 'var(--gmaps-subtext)', marginTop: '2px' }}>
-                  {activePlace.subtitle}
-                </div>
+                {activePlace.subtitle && activePlace.subtitle !== `${activePlace.lat.toFixed(5)}, ${activePlace.lng.toFixed(5)}` && (
+                  <div style={{ fontSize: '12px', color: 'var(--gmaps-subtext)', marginTop: '2px' }}>
+                    {activePlace.subtitle}
+                  </div>
+                )}
                 <div style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', marginTop: '2px', opacity: 0.85 }}>
                   {activePlace.lat.toFixed(5)}, {activePlace.lng.toFixed(5)}
                 </div>
@@ -1999,6 +2134,10 @@ export default function MapDisplay({
                   if (g.formattedAddress) setEndInputText(g.formattedAddress);
                 });
               } else {
+                if (stops.length >= 8) {
+                  showToast('Maximum of 8 stops allowed.');
+                  return;
+                }
                 const newId = `stop-${Date.now()}`;
                 setStops((prev) => [...prev, { id: newId, point: pt, text: `${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}` }]);
                 reverseGeocode(pt.lat, pt.lng, dockerStatus, activeEngine).then((g) => {
@@ -2108,7 +2247,7 @@ export default function MapDisplay({
               <span style={{ fontSize: '11px', color: 'var(--gmaps-subtext)', fontWeight: 600 }}>JUMP TO MAP REGION</span>
               <div style={{ display: 'flex', gap: '6px' }}>
                 <select
-                  value={selectedState}
+                  value={effectiveSelectedState}
                   onChange={(e) => {
                     const st = e.target.value;
                     setSelectedState(st);
@@ -2138,7 +2277,7 @@ export default function MapDisplay({
                 </select>
                 <button
                   onClick={() => {
-                    const boundsData = (stateBounds as any)[selectedState];
+                    const boundsData = (stateBounds as any)[effectiveSelectedState];
                     if (boundsData) {
                       setRouteBounds(L.latLngBounds([
                         [boundsData[0][0], boundsData[0][1]],
@@ -2303,8 +2442,11 @@ export default function MapDisplay({
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <input
                       type="number"
+                      min={1}
+                      max={200}
                       value={newSpeed}
-                      onChange={(e) => setNewSpeed(Number(e.target.value))}
+                      onChange={(e) => setNewSpeed(Math.max(0, Math.min(200, Number(e.target.value))))}
+                      onBlur={() => setNewSpeed((v) => Math.max(1, Math.min(200, Number(v) || 1)))}
                       disabled={isClosing}
                       style={{
                         width: '45px',
@@ -2367,8 +2509,11 @@ export default function MapDisplay({
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                       <input
                         type="number"
+                        min={1}
+                        max={200}
                         value={backSpeed}
-                        onChange={(e) => setBackSpeed(Number(e.target.value))}
+                        onChange={(e) => setBackSpeed(Math.max(0, Math.min(200, Number(e.target.value))))}
+                        onBlur={() => setBackSpeed((v) => Math.max(1, Math.min(200, Number(v) || 1)))}
                         disabled={isBackClosing}
                         style={{
                           width: '45px',
